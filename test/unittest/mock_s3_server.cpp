@@ -72,13 +72,12 @@ struct MockS3Server::Impl {
 	explicit Impl(MockS3ServerConfig config_p) : config(std::move(config_p)) {
 		remaining_put_failures = config.transient_put_failures;
 		remaining_get_failures = config.transient_get_failures;
-		remaining_truncated_range_failures = config.truncated_range_failures;
-		remaining_successful_short_range_responses = config.successful_short_range_responses;
+		remaining_range_behavior_requests = config.range_behavior_requests;
 		remaining_head_failures = config.transient_head_failures;
 		remaining_delete_failures = config.transient_delete_failures;
 		remaining_post_failures = config.transient_post_failures;
 		remaining_complete_post_failures = config.transient_complete_post_failures;
-		if (config.successful_short_range_responses > 0) {
+		if (config.range_behavior == MockS3RangeBehavior::SHORT_SUCCESS && config.range_behavior_requests > 0) {
 			server.set_keep_alive_max_count(1);
 		}
 		RegisterRoutes();
@@ -161,7 +160,9 @@ struct MockS3Server::Impl {
 
 	void SetObjectHeaders(httplib::Response &response) const {
 		response.set_header("Accept-Ranges", "bytes");
-		response.set_header("Content-Length", std::to_string(config.object_data.size()));
+		auto content_length =
+		    config.head_content_length.IsValid() ? config.head_content_length.GetIndex() : config.object_data.size();
+		response.set_header("Content-Length", std::to_string(content_length));
 		response.set_header("ETag", config.etag);
 	}
 
@@ -303,6 +304,13 @@ struct MockS3Server::Impl {
 				Record(request, response.status);
 				return;
 			}
+			if (config.range_behavior == MockS3RangeBehavior::IGNORE_RANGE) {
+				response.status = 200;
+				response.set_header("ETag", config.etag);
+				response.set_content(config.object_data, "application/octet-stream");
+				Record(request, response.status);
+				return;
+			}
 
 			if (!ParseRange(range, config.object_data.size())) {
 				response.status = 416;
@@ -313,13 +321,15 @@ struct MockS3Server::Impl {
 			response.status = 206;
 			response.set_header("Accept-Ranges", "bytes");
 			response.set_header("ETag", config.etag);
-			if (ConsumeFailure(remaining_successful_short_range_responses)) {
+			if (config.range_behavior == MockS3RangeBehavior::SHORT_SUCCESS &&
+			    ConsumeFailure(remaining_range_behavior_requests)) {
 				response.set_header("X-Mock-Successful-Short-Response", "1");
 				response.set_content(config.object_data, "application/octet-stream");
 				Record(request, response.status);
 				return;
 			}
-			if (ConsumeFailure(remaining_truncated_range_failures)) {
+			if (config.range_behavior == MockS3RangeBehavior::TRUNCATE_TRANSFER &&
+			    ConsumeFailure(remaining_range_behavior_requests)) {
 				response.set_content_provider(config.object_data.size(), "application/octet-stream",
 				                              [this](size_t offset, size_t length, httplib::DataSink &sink) {
 					                              auto omitted_bytes =
@@ -426,8 +436,7 @@ struct MockS3Server::Impl {
 	int port = 0;
 	mutable std::atomic<idx_t> remaining_put_failures {0};
 	mutable std::atomic<idx_t> remaining_get_failures {0};
-	mutable std::atomic<idx_t> remaining_truncated_range_failures {0};
-	mutable std::atomic<idx_t> remaining_successful_short_range_responses {0};
+	mutable std::atomic<idx_t> remaining_range_behavior_requests {0};
 	mutable std::atomic<idx_t> remaining_head_failures {0};
 	mutable std::atomic<idx_t> remaining_delete_failures {0};
 	mutable std::atomic<idx_t> remaining_post_failures {0};

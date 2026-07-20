@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/optional_idx.hpp"
 
 namespace duckdb {
 
@@ -15,6 +16,8 @@ enum class MockS3RefreshTarget : uint8_t {
 	DELETE_OBJECT,
 	LIST_OBJECTS_GET
 };
+
+enum class MockS3RangeBehavior : uint8_t { NORMAL, IGNORE_RANGE, TRUNCATE_TRANSFER, SHORT_SUCCESS };
 
 struct MockS3ServerConfig {
 	string bucket = "refresh-bucket";
@@ -31,12 +34,14 @@ struct MockS3ServerConfig {
 	idx_t transient_put_failures = 0;
 	//! Number of object GETs to fail with a 400 before succeeding
 	idx_t transient_get_failures = 0;
-	//! Number of leading range GETs that advertise the full response but close before sending it
-	idx_t truncated_range_failures = 0;
+	//! Range response behavior to inject
+	MockS3RangeBehavior range_behavior = MockS3RangeBehavior::NORMAL;
+	//! Number of leading range GETs affected by transient range behaviors
+	idx_t range_behavior_requests = 0;
 	//! Number of bytes to omit from an injected truncated range response
 	idx_t truncated_range_bytes = 1;
-	//! Number of leading range GETs that cleanly finish after sending fewer bytes than requested
-	idx_t successful_short_range_responses = 0;
+	//! Override the Content-Length reported by HEAD while keeping the GET body unchanged
+	optional_idx head_content_length;
 	//! Number of object HEADs to fail with a 400 before succeeding
 	idx_t transient_head_failures = 0;
 	//! Number of object DELETEs to fail with a 400 before succeeding
