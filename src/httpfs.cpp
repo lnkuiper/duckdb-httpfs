@@ -627,10 +627,9 @@ bool HTTPFileSystem::ReadInternal(FileHandle &handle, void *buffer, int64_t nr_b
 			throw InternalException("Cached file not initialized properly");
 		}
 		if (hfh.cached_file_handle->GetSize() < location + nr_bytes) {
-			throw InternalException(
-			    "Cached file length of %llu bytes cannot satisfy a read at offset %llu for %llu bytes",
-			    static_cast<unsigned long long>(hfh.cached_file_handle->GetSize()),
-			    static_cast<unsigned long long>(location), static_cast<unsigned long long>(nr_bytes));
+			throw IOException("Cached file length of %llu bytes cannot satisfy a read at offset %llu for %llu bytes",
+			                  static_cast<unsigned long long>(hfh.cached_file_handle->GetSize()),
+			                  static_cast<unsigned long long>(location), static_cast<unsigned long long>(nr_bytes));
 		}
 		memcpy(buffer, hfh.cached_file_handle->GetData() + location, nr_bytes);
 		DUCKDB_LOG_FILE_SYSTEM_READ(handle, nr_bytes, location);
@@ -743,15 +742,13 @@ void HTTPFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, id
 	hfh.FullDownload(*this, should_write_cache);
 
 	const auto downloaded_length = hfh.cached_file_handle->GetSize();
-	const auto requested_end = location + NumericCast<idx_t>(nr_bytes);
-	if (downloaded_length < requested_end) {
+	if (downloaded_length != head_reported_length) {
+		hfh.UpdateMetadataCache();
 		throw HTTPException(Exception::ConstructMessage(
-		    "The size reported by HEAD for '%s' was %llu bytes, but the full GET downloaded %llu bytes and cannot "
-		    "satisfy a read at offset %llu for %llu bytes. You can try to resolve this by enabling `SET "
-		    "force_download=true`",
+		    "The size reported by HEAD for '%s' was %llu bytes, but the full GET downloaded %llu bytes. You can try "
+		    "to resolve this by enabling `SET force_download=true`",
 		    hfh.path, static_cast<unsigned long long>(head_reported_length),
-		    static_cast<unsigned long long>(downloaded_length), static_cast<unsigned long long>(location),
-		    static_cast<unsigned long long>(nr_bytes)));
+		    static_cast<unsigned long long>(downloaded_length)));
 	}
 
 	if (!ReadInternal(handle, buffer, nr_bytes, location)) {
@@ -820,16 +817,16 @@ idx_t HTTPFileSystem::SeekPosition(FileHandle &handle) {
 	return sfh.file_offset;
 }
 
-optional_ptr<HTTPMetadataCache> HTTPFileSystem::GetGlobalCache() {
+shared_ptr<HTTPMetadataCache> HTTPFileSystem::GetGlobalCache() {
 	lock_guard<mutex> lock(global_cache_lock);
 	if (!global_metadata_cache) {
-		global_metadata_cache = make_uniq<HTTPMetadataCache>(false, true);
+		global_metadata_cache = make_shared_ptr<HTTPMetadataCache>(false, true);
 	}
-	return global_metadata_cache.get();
+	return global_metadata_cache;
 }
 
 // Get either the local, global, or no cache depending on settings
-static optional_ptr<HTTPMetadataCache> TryGetMetadataCache(optional_ptr<FileOpener> opener, HTTPFileSystem &httpfs) {
+static shared_ptr<HTTPMetadataCache> TryGetMetadataCache(optional_ptr<FileOpener> opener, HTTPFileSystem &httpfs) {
 	auto db = FileOpener::TryGetDatabase(opener);
 	auto client_context = FileOpener::TryGetClientContext(opener);
 	if (!db) {
@@ -846,7 +843,7 @@ static optional_ptr<HTTPMetadataCache> TryGetMetadataCache(optional_ptr<FileOpen
 	if (use_shared_cache) {
 		return httpfs.GetGlobalCache();
 	} else if (client_context) {
-		return client_context->registered_state->GetOrCreate<HTTPMetadataCache>("http_cache", true, true).get();
+		return client_context->registered_state->GetOrCreate<HTTPMetadataCache>("http_cache", true, true);
 	}
 	return nullptr;
 }
@@ -1034,6 +1031,12 @@ HTTPMetadataCacheEntry HTTPFileHandle::GetCacheEntry() const {
 	return result;
 }
 
+void HTTPFileHandle::UpdateMetadataCache() {
+	if (metadata_cache) {
+		metadata_cache->Insert(path, GetCacheEntry());
+	}
+}
+
 void HTTPFileHandle::Initialize(optional_ptr<FileOpener> opener) {
 	auto &hfs = file_system.Cast<HTTPFileSystem>();
 	http_params.state = HTTPState::TryGetState(opener);
@@ -1046,6 +1049,7 @@ void HTTPFileHandle::Initialize(optional_ptr<FileOpener> opener) {
 	}
 
 	auto current_cache = TryGetMetadataCache(opener, hfs);
+	metadata_cache = current_cache;
 
 	bool should_write_cache = false;
 	if (flags.OpenForReading()) {
@@ -1067,6 +1071,11 @@ void HTTPFileHandle::Initialize(optional_ptr<FileOpener> opener) {
 					auto &cache_entry = http_params.state->GetCachedFile(path);
 					auto handle = cache_entry->GetHandle();
 					if (handle->Initialized()) {
+						const auto cached_length = handle->GetSize();
+						if (length != cached_length) {
+							length = cached_length;
+							current_cache->Insert(path, GetCacheEntry());
+						}
 						cached_file_handle = std::move(handle);
 					}
 				}

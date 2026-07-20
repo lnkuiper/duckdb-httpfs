@@ -108,6 +108,8 @@ public:
 
 	// When using full file download, the full file will be written to a cached file handle
 	unique_ptr<CachedFileHandle> cached_file_handle;
+	// Metadata cache used to initialize this handle, if metadata caching is enabled
+	shared_ptr<HTTPMetadataCache> metadata_cache;
 
 	// Read info
 	idx_t buffer_available;
@@ -170,6 +172,8 @@ protected:
 public:
 	//! Fully downloads a file
 	void FullDownload(HTTPFileSystem &hfs, bool &should_write_cache);
+	//! Update cached metadata with this handle's current file information
+	void UpdateMetadataCache();
 };
 
 class HTTPFileSystem : public FileSystem {
@@ -218,7 +222,7 @@ public:
 	}
 	static void Verify();
 
-	optional_ptr<HTTPMetadataCache> GetGlobalCache();
+	shared_ptr<HTTPMetadataCache> GetGlobalCache();
 	virtual HTTPException GetHTTPError(FileHandle &, const HTTPResponse &response, const string &url);
 
 	//! HTTP request overrides.
@@ -276,7 +280,7 @@ protected:
 private:
 	// Global cache
 	mutex global_cache_lock;
-	unique_ptr<HTTPMetadataCache> global_metadata_cache;
+	shared_ptr<HTTPMetadataCache> global_metadata_cache;
 };
 
 } // namespace duckdb
