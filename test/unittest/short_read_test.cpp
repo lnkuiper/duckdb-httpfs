@@ -214,30 +214,50 @@ static unique_ptr<HTTPResponse> RunSyntheticRange(TestHTTPFileContext &context, 
 
 static void RunFullDownloadSizeMismatch(const string &client_implementation) {
 	MockS3ServerConfig config;
-	config.object_data = "A";
-	config.head_content_length = 2;
+	config.object_data = "AB";
+	config.head_content_length = 3;
 	config.range_behavior = MockS3RangeBehavior::IGNORE_RANGE;
 	MockS3Server server(std::move(config));
 
 	DuckDB db(nullptr);
 	Connection con(db);
 	ConfigureShortReadTest(db, con, 0, client_implementation);
+	RequireQueryOk(con, "SET enable_http_metadata_cache=true");
 
 	RequireQueryOk(con, "BEGIN TRANSACTION");
-	auto outcome = TryReadRange(con, server.HTTPPath(), 0, 2);
-	RequireQueryOk(con, "ROLLBACK");
-	RequireQueryOk(con, "SELECT 42");
+	auto initial_outcome = TryReadRange(con, server.HTTPPath(), 0, 1);
 
 	auto observations = server.Observations();
 	INFO(MockS3DescribeObservations(observations));
-	INFO(outcome.error);
-	REQUIRE(outcome.failed);
-	REQUIRE_FALSE(outcome.internal_error);
-	REQUIRE(outcome.error.find("size reported by HEAD") != string::npos);
-	REQUIRE(outcome.error.find("full GET downloaded") != string::npos);
+	INFO(initial_outcome.error);
+	REQUIRE(initial_outcome.failed);
+	REQUIRE_FALSE(initial_outcome.internal_error);
+	REQUIRE(initial_outcome.error.find("size reported by HEAD") != string::npos);
+	REQUIRE(initial_outcome.error.find("full GET downloaded") != string::npos);
 	REQUIRE(CountRequests(observations, "HEAD", 200) == 1);
-	REQUIRE(CountRequests(observations, "GET", 200, "bytes=0-1") == 1);
+	REQUIRE(CountRequests(observations, "GET", 200, "bytes=0-0") == 1);
 	REQUIRE(CountRequests(observations, "GET", 200) == 1);
+
+	// The full download is cached at its actual size. A later handle must report an external I/O error rather than
+	// treating a bounds mismatch as a database-invalidating internal error.
+	auto beyond_eof_outcome = TryReadRange(con, server.HTTPPath(), 2, 1);
+	INFO(beyond_eof_outcome.error);
+	REQUIRE(beyond_eof_outcome.failed);
+	REQUIRE_FALSE(beyond_eof_outcome.internal_error);
+	RequireQueryOk(con, "SELECT 42");
+
+	// Clear the query-local full-file cache. The shared metadata entry must now reflect the downloaded size while
+	// retaining the HEAD metadata, so reopening and reading a valid byte succeeds without trusting the stale length.
+	auto http_state = HTTPState::TryGetState(*con.context);
+	REQUIRE(http_state);
+	http_state->Reset();
+	auto &fs = FileSystem::GetFileSystem(*con.context);
+	auto reopened = fs.OpenFile(server.HTTPPath(), FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_DIRECT_IO);
+	REQUIRE(reopened->Cast<HTTPFileHandle>().etag == "\"httpfs-refresh-test-etag\"");
+	string buffer(1, '?');
+	reopened->Read(QueryContext(*con.context), &buffer[0], buffer.size(), 1);
+	REQUIRE(buffer == "B");
+	RequireQueryOk(con, "ROLLBACK");
 }
 
 static void RunFullDownloadFallbackControl(const string &client_implementation) {
