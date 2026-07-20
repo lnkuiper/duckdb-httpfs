@@ -257,20 +257,6 @@ public:
 		curl_easy_getinfo(*curl, CURLINFO_RESPONSE_CODE, &request_info->response_code);
 
 		const idx_t bytes_received = request_info->body.size();
-		if (!request_info->header_collection.empty() &&
-		    request_info->header_collection.back().HasHeader("content-length")) {
-			try {
-				// Use stoull (not stoi) — Content-Length can exceed INT_MAX for files >2GB.
-				const idx_t content_length_received =
-				    std::stoull(request_info->header_collection.back().GetHeaderValue("content-length"));
-				if (bytes_received != content_length_received) {
-					// Something is off, might happen in case of unreliable network
-					// TODO: consider logging this
-				}
-			} catch (const std::exception &) {
-				// Content-Length header contains a non-numeric value — skip validation.
-			}
-		}
 
 		if (state) {
 			state->total_bytes_received += bytes_received;
@@ -283,8 +269,10 @@ public:
 			}
 		}
 
+		// A failed transfer may retain a partial body. Keep it away from the content handler so callers cannot mistake
+		// that prefix for a complete response; the transformed response still preserves the original curl error.
 		const char *data = request_info->body.c_str();
-		if (info.content_handler) {
+		if (info.content_handler && res == CURLcode::CURLE_OK) {
 			info.content_handler(const_data_ptr_cast(data), bytes_received);
 		}
 

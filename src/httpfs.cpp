@@ -357,7 +357,14 @@ unique_ptr<HTTPResponse> HTTPFileSystem::RunGetRangeRequest(HTTPFileHandle &hfh,
 	    });
 
 	get_request.try_request = auto_fallback_to_full_file_download;
-	return send_request(get_request);
+	auto response = send_request(get_request);
+	if (response && !response->HasRequestError() && response->Success() && buffer_out != nullptr &&
+	    out_offset != buffer_out_len) {
+		throw IOException("Short read for HTTP GET to '%s': requested range %s (%llu bytes), but received %llu bytes",
+		                  url, range_expr, static_cast<unsigned long long>(buffer_out_len),
+		                  static_cast<unsigned long long>(out_offset));
+	}
+	return response;
 }
 
 unique_ptr<HTTPResponse> HTTPFileSystem::PostRequest(HTTPInput &input, string url, HTTPHeaders header_map,
@@ -579,9 +586,20 @@ bool HTTPFileSystem::TryRangeRequest(FileHandle &handle, string url, HTTPHeaders
 	auto res = GetRangeRequest(handle, url, header_map, file_offset, buffer_out, buffer_out_len);
 
 	if (res) {
-		// Request succeeded TODO: fix upstream that 206 is not considered success
-		if (res->Success() || res->status == HTTPStatusCode::PartialContent_206 ||
-		    res->status == HTTPStatusCode::Accepted_202) {
+		// A transport failure can still retain the HTTP status parsed before the body was interrupted.
+		// Check the request error before accepting status codes such as 206 as successful range reads.
+		if (res->HasRequestError()) {
+			// Special case: we can do a retry with a full file download
+			if (RespondedWithRangeRequestNotSupported(*res)) {
+				if (hfh.http_params.auto_fallback_to_full_download) {
+					return false;
+				}
+			}
+			ErrorData error(res->GetRequestError());
+			error.Throw();
+		}
+
+		if (res->Success()) {
 
 			if (!hfh.flags.RequireParallelAccess()) {
 				// Update range request statistics
@@ -594,19 +612,6 @@ bool HTTPFileSystem::TryRangeRequest(FileHandle &handle, string url, HTTPHeaders
 			return true;
 		}
 
-		// Request failed and we have a request error
-		if (res->HasRequestError()) {
-
-			// Special case: we can do a retry with a full file download
-			if (RespondedWithRangeRequestNotSupported(*res)) {
-				auto &hfh = handle.Cast<HTTPFileHandle>();
-				if (hfh.http_params.auto_fallback_to_full_download) {
-					return false;
-				}
-			}
-			ErrorData error(res->GetRequestError());
-			error.Throw();
-		}
 		throw HTTPException(*res, "Request returned HTTP %d for HTTP %s to '%s'", static_cast<int>(res->status),
 		                    EnumUtil::ToString(RequestType::GET_REQUEST), url);
 	}
@@ -622,8 +627,10 @@ bool HTTPFileSystem::ReadInternal(FileHandle &handle, void *buffer, int64_t nr_b
 			throw InternalException("Cached file not initialized properly");
 		}
 		if (hfh.cached_file_handle->GetSize() < location + nr_bytes) {
-			throw IOException("Cached file length can't satisfy the requested Read. You can try to resolve this by "
-			                  "enabling `SET force_download=true`");
+			throw InternalException(
+			    "Cached file length of %llu bytes cannot satisfy a read at offset %llu for %llu bytes",
+			    static_cast<unsigned long long>(hfh.cached_file_handle->GetSize()),
+			    static_cast<unsigned long long>(location), static_cast<unsigned long long>(nr_bytes));
 		}
 		memcpy(buffer, hfh.cached_file_handle->GetData() + location, nr_bytes);
 		DUCKDB_LOG_FILE_SYSTEM_READ(handle, nr_bytes, location);
@@ -730,9 +737,22 @@ void HTTPFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, id
 	}
 
 	auto &hfh = handle.Cast<HTTPFileHandle>();
+	const auto head_reported_length = hfh.length;
 
 	bool should_write_cache = false;
 	hfh.FullDownload(*this, should_write_cache);
+
+	const auto downloaded_length = hfh.cached_file_handle->GetSize();
+	const auto requested_end = location + NumericCast<idx_t>(nr_bytes);
+	if (downloaded_length < requested_end) {
+		throw HTTPException(Exception::ConstructMessage(
+		    "The size reported by HEAD for '%s' was %llu bytes, but the full GET downloaded %llu bytes and cannot "
+		    "satisfy a read at offset %llu for %llu bytes. You can try to resolve this by enabling `SET "
+		    "force_download=true`",
+		    hfh.path, static_cast<unsigned long long>(head_reported_length),
+		    static_cast<unsigned long long>(downloaded_length), static_cast<unsigned long long>(location),
+		    static_cast<unsigned long long>(nr_bytes)));
+	}
 
 	if (!ReadInternal(handle, buffer, nr_bytes, location)) {
 		throw HTTPException("Failed to read from HTTP file after automatically retrying a full file download.");
