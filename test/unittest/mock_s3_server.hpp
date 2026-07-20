@@ -31,6 +31,12 @@ struct MockS3ServerConfig {
 	idx_t transient_put_failures = 0;
 	//! Number of object GETs to fail with a 400 before succeeding
 	idx_t transient_get_failures = 0;
+	//! Number of leading range GETs that advertise the full response but close before sending it
+	idx_t truncated_range_failures = 0;
+	//! Number of bytes to omit from an injected truncated range response
+	idx_t truncated_range_bytes = 1;
+	//! Number of leading range GETs that cleanly finish after sending fewer bytes than requested
+	idx_t successful_short_range_responses = 0;
 	//! Number of object HEADs to fail with a 400 before succeeding
 	idx_t transient_head_failures = 0;
 	//! Number of object DELETEs to fail with a 400 before succeeding
@@ -65,6 +71,7 @@ public:
 	MockS3Server &operator=(const MockS3Server &) = delete;
 
 	string Endpoint() const;
+	string HTTPPath() const;
 	string S3Path() const;
 	const string &ObjectData() const;
 	vector<MockS3RequestObservation> Observations() const;
