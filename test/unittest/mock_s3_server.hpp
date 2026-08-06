@@ -50,6 +50,9 @@ struct MockS3ServerConfig {
 	idx_t transient_post_failures = 0;
 	//! Number of multipart-complete POSTs (uploadId=) to fail with a 400 before succeeding
 	idx_t transient_complete_post_failures = 0;
+	//! Number of multipart-complete POSTs (uploadId=) to answer with an HTTP 200 whose body carries an error before
+	//! succeeding
+	idx_t transient_complete_post_200_errors = 0;
 	//! Whether injected 400s carry S3's retryable RequestTimeout code or a generic (non-retryable) code
 	bool failure_is_request_timeout = true;
 	//! Whether injected 400 bodies are truncated mid-XML (an open <Code> with no closing tag)

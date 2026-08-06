@@ -230,6 +230,9 @@ public:
 	BufferHandle Allocate(idx_t part_size, uint16_t max_threads);
 	static string GetS3BadRequestError(const S3AuthParams &s3_auth_params, string correct_region = "");
 	static string ParseS3Error(const string &error);
+	static bool TryGetS3ErrorCode(const string &body, string &code);
+	static void SleepForS3RequestTimeoutRetry(const HTTPFSParams &http_params, idx_t transient_retries,
+	                                          double &wait_ms);
 	static string GetS3AuthError(const S3AuthParams &s3_auth_params);
 	static string GetGCSAuthError(const S3AuthParams &s3_auth_params);
 	static HTTPException GetS3Error(const S3AuthParams &s3_auth_params, const HTTPResponse &response,

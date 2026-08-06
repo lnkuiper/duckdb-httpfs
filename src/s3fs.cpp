@@ -419,6 +419,18 @@ bool IsS3RequestTimeout(const HTTPResponse &response) {
 	return TryFindTagContents(response.body, "Code", 0, code).IsValid() && code == "RequestTimeout";
 }
 
+void S3FileSystem::SleepForS3RequestTimeoutRetry(const HTTPFSParams &http_params, idx_t transient_retries,
+                                                 double &wait_ms) {
+	if (transient_retries == 0) {
+		wait_ms = static_cast<double>(http_params.retry_wait_ms);
+		return;
+	}
+#ifndef DUCKDB_NO_THREADS
+	ThreadUtil::SleepMs(static_cast<idx_t>(wait_ms));
+#endif
+	wait_ms *= http_params.retry_backoff;
+}
+
 template <class CREATE_DATA, class REQUEST, class REFRESH, class SET_REGION>
 static unique_ptr<HTTPResponse> RunS3RequestWithAuthRefreshInternal(const string &s3_url, CREATE_DATA create_data,
                                                                     REQUEST request, REFRESH refresh_auth_params,
@@ -1823,6 +1835,13 @@ string S3FileSystem::GetGCSAuthError(const S3AuthParams &s3_auth_params) {
 		extra_text += "\n* Ensure your HMAC key_id and secret are correct.";
 	}
 	return extra_text;
+}
+
+bool S3FileSystem::TryGetS3ErrorCode(const string &body, string &code) {
+	if (body.empty()) {
+		return false;
+	}
+	return TryFindTagContents(body, "Code", 0, code).IsValid();
 }
 
 string S3FileSystem::ParseS3Error(const string &error) {

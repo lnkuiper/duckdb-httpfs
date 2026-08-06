@@ -100,15 +100,33 @@ void S3MultiPartUpload::FinalizeMultipartUpload() {
 	ss << "</CompleteMultipartUpload>";
 	string body = ss.str();
 
-	// Response is around ~400 in AWS docs so this should be enough to not need a resize
-	string result;
-
 	string query_param = "uploadId=" + S3FileSystem::UrlEncode(multipart_upload_id, true);
-	auto res = s3fs.PostRequest(*http_input, path, {}, result, (char *)body.c_str(), body.length(), query_param);
-	auto open_tag_pos = result.find("<CompleteMultipartUploadResult", 0);
-	if (open_tag_pos == string::npos) {
-		throw HTTPException(*res, "Unexpected response during S3 multipart upload finalization: %d\n\n%s",
-		                    static_cast<int>(res->status), result);
+
+	// CompleteMultipartUpload is special: after S3 sends the 200 status header it can still write an error into the
+	// body.
+	auto &http_params = http_input->params->Cast<HTTPFSParams>();
+	idx_t transient_retries = 0;
+	double transient_wait_ms = 0;
+	for (;;) {
+		string result;
+		auto res = s3fs.PostRequest(*http_input, path, {}, result, (char *)body.c_str(), body.length(), query_param);
+
+		if (result.find("<CompleteMultipartUploadResult", 0) != string::npos) {
+			return;
+		}
+
+		// Response is around ~400 in AWS docs so this should be enough to not need a resize
+		string code;
+		// Only HTTP 200s with an embedded error are retried here.
+		if (res->status == HTTPStatusCode::OK_200 && S3FileSystem::TryGetS3ErrorCode(result, code) &&
+		    code == "InternalError" && transient_retries < http_params.retries) {
+			S3FileSystem::SleepForS3RequestTimeoutRetry(http_params, transient_retries, transient_wait_ms);
+			transient_retries++;
+			continue;
+		}
+
+		throw HTTPException(*res, "Unexpected response during S3 multipart upload finalization: %d%s\n\n%s",
+		                    static_cast<int>(res->status), S3FileSystem::ParseS3Error(result), result);
 	}
 }
 

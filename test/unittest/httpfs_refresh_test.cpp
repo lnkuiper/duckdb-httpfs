@@ -856,9 +856,70 @@ static void RunMultipartCompleteNotRetriedScenario(const string &client_implemen
 	REQUIRE(CountObservationsTarget(observations, "POST", 400, "uploadId") == 1);
 }
 
+// A CompleteMultipartUpload that returns HTTP 200 with an embedded InternalError must be retried
+static void RunCompletePost200ErrorRetryScenario(const string &client_implementation) {
+	MockS3ServerConfig config;
+	config.bucket = BUCKET;
+	config.object_key = OBJECT_KEY;
+	config.stale_key_id = STALE_KEY_ID;
+	// Use a refresh target that writes never exercise, so credential refresh never triggers here.
+	config.refresh_target = MockS3RefreshTarget::DELETE_OBJECT;
+	config.transient_complete_post_200_errors = 2;
+	MockS3Server server(std::move(config));
+
+	DuckDB db(nullptr);
+	Connection con(db);
+	ConfigureRefreshTest(db, con, server, client_implementation, false);
+
+	RequireQueryOk(con, "SET http_retries=3");
+	RequireQueryOk(con, "SET http_retry_wait_ms=1");
+	RequireQueryOk(con, "BEGIN TRANSACTION");
+	WriteMultipartPayload(con);
+	RequireQueryOk(con, "COMMIT");
+
+	auto observations = server.Observations();
+	INFO(MockS3DescribeObservations(observations));
+	// The two 200 with embedded error completions were retried, and the third completion succeeded: 3 complete
+	// POSTs in total, all reported as HTTP 200 by S3.
+	REQUIRE(CountObservationsTarget(observations, "POST", 200, "uploadId") == 3);
+}
+
+// A CompleteMultipartUpload that keeps returning a 200 OK with an embedded error must exhaust exactly http_retries
+// retries
+static void RunCompletePost200ErrorExhaustsBudgetScenario(const string &client_implementation) {
+	MockS3ServerConfig config;
+	config.bucket = BUCKET;
+	config.object_key = OBJECT_KEY;
+	config.stale_key_id = STALE_KEY_ID;
+	config.refresh_target = MockS3RefreshTarget::DELETE_OBJECT;
+	config.transient_complete_post_200_errors = 1000;
+	MockS3Server server(std::move(config));
+
+	DuckDB db(nullptr);
+	Connection con(db);
+	ConfigureRefreshTest(db, con, server, client_implementation, false);
+
+	RequireQueryOk(con, "SET http_retries=3");
+	RequireQueryOk(con, "SET http_retry_wait_ms=1");
+	RequireQueryOk(con, "BEGIN TRANSACTION");
+	REQUIRE_THROWS(WriteMultipartPayload(con));
+	RequireQueryOk(con, "ROLLBACK");
+
+	auto observations = server.Observations();
+	INFO(MockS3DescribeObservations(observations));
+	// http_retries=3 => 1 initial attempt + 3 retries = 4 complete POSTs, all HTTP 200 with the embedded error.
+	REQUIRE(CountObservationsTarget(observations, "POST", 200, "uploadId") == 4);
+}
+
 static void RunAllTransientRetryScenarios(const string &client_implementation) {
 	SECTION("multipart part upload retries and completes") {
 		RunTransientPutRetryScenario(client_implementation);
+	}
+	SECTION("a multipart-complete 200 with an embedded transient error is retried and completes") {
+		RunCompletePost200ErrorRetryScenario(client_implementation);
+	}
+	SECTION("a persistent multipart-complete 200-with-error is bounded by http_retries") {
+		RunCompletePost200ErrorExhaustsBudgetScenario(client_implementation);
 	}
 	SECTION("object read retries and completes") {
 		RunTransientGetRetryScenario(client_implementation);

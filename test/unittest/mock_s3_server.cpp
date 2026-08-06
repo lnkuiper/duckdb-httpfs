@@ -77,6 +77,7 @@ struct MockS3Server::Impl {
 		remaining_delete_failures = config.transient_delete_failures;
 		remaining_post_failures = config.transient_post_failures;
 		remaining_complete_post_failures = config.transient_complete_post_failures;
+		remaining_complete_post_200_errors = config.transient_complete_post_200_errors;
 		if (config.range_behavior == MockS3RangeBehavior::SHORT_SUCCESS && config.range_behavior_requests > 0) {
 			server.set_keep_alive_max_count(1);
 		}
@@ -217,6 +218,16 @@ struct MockS3Server::Impl {
 			                     "CompleteMultipartUploadResult>",
 			                     "application/xml");
 		}
+		Record(request, response.status);
+	}
+
+	// S3 can return HTTP 200 OK on CompleteMultipartUpload while embedding an error in the body
+	void SendComplete200Error(const httplib::Request &request, httplib::Response &response) const {
+		response.status = 200;
+		response.set_content("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+		                     "<Error><Code>InternalError</Code>"
+		                     "<Message>We encountered an internal error. Please try again.</Message></Error>",
+		                     "application/xml");
 		Record(request, response.status);
 	}
 
@@ -398,6 +409,11 @@ struct MockS3Server::Impl {
 				SendS3Error400(request, response, config.failure_is_request_timeout);
 				return;
 			}
+			if (request.target.find("uploadId") != string::npos && remaining_complete_post_200_errors.load() > 0) {
+				remaining_complete_post_200_errors--;
+				SendComplete200Error(request, response);
+				return;
+			}
 			SendMultipartPostSuccess(request, response);
 		});
 
@@ -439,6 +455,7 @@ struct MockS3Server::Impl {
 	mutable std::atomic<idx_t> remaining_delete_failures {0};
 	mutable std::atomic<idx_t> remaining_post_failures {0};
 	mutable std::atomic<idx_t> remaining_complete_post_failures {0};
+	mutable std::atomic<idx_t> remaining_complete_post_200_errors {0};
 	mutable std::mutex observation_lock;
 	mutable vector<MockS3RequestObservation> observations;
 };
