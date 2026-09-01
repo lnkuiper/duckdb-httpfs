@@ -79,6 +79,8 @@ struct MockS3FailureConfig {
 	idx_t transient_503_lists = 0;
 	//! Answer this many leading ListObjectsV2 requests with HTTP 400
 	idx_t transient_400_lists = 0;
+	//! Answer this many leading ListObjectsV2 requests with malformed HTTP 200 bodies
+	idx_t malformed_success_lists = 0;
 	//! Number of object PUTs to fail with a 400 before succeeding
 	idx_t transient_put_failures = 0;
 	//! Number of object GETs to fail with a 400 before succeeding
@@ -99,6 +101,11 @@ struct MockS3FailureConfig {
 	bool failure_is_request_timeout = true;
 	//! Whether injected 400 bodies are truncated mid-XML (an open <Code> with no closing tag)
 	bool truncated_failure_body = false;
+};
+
+struct MockS3ListConfig {
+	//! Return a truncated first page before the final object page
+	bool paginate = false;
 };
 
 struct MockS3RangeConfig {
@@ -146,6 +153,7 @@ struct MockS3ServerConfig {
 	MockS3AuthConfig auth;
 	MockS3MetadataConfig metadata;
 	MockS3FailureConfig failures;
+	MockS3ListConfig list;
 	MockS3RangeConfig range;
 	MockS3FullGetConfig full_get;
 	MockS3UploadConfig upload;

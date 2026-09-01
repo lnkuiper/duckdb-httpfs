@@ -36,6 +36,7 @@ public:
 
 enum class S3RequestTarget : uint8_t { OBJECT, BUCKET };
 enum class S3PostRequestMode : uint8_t { DEFAULT, RETRY_RECEIVED_RESPONSES };
+enum class S3ReceivedResponseAction : uint8_t { ACCEPT, RETRY_FRESH_CONNECTION };
 
 struct S3RequestQuery {
 	S3RequestQuery() = default;
@@ -106,6 +107,8 @@ struct S3RequestExecutor {
 	using RequestCallback = std::function<unique_ptr<HTTPResponse>(S3RequestData &)>;
 	using CreateQueryCallback = std::function<S3RequestQuery(const ParsedS3Url &)>;
 	using RegionRedirectCallback = std::function<void(const S3RequestData &, const string &, const string &)>;
+	using ReceivedResponseCallback =
+	    std::function<S3ReceivedResponseAction(const S3RequestData &, const HTTPResponse &)>;
 
 	static unique_ptr<HTTPResponse> RunSession(EncryptionUtil &encryption_util, HTTPRequestSession &session,
 	                                           const string &s3_url, RequestType request_type, S3RequestTarget target,
@@ -114,7 +117,8 @@ struct S3RequestExecutor {
 	                                           const RequestCallback &request,
 	                                           const RegionRedirectCallback &region_redirect = {},
 	                                           optional_ptr<S3RequestContext> request_context = nullptr,
-	                                           S3PostRequestMode post_request_mode = S3PostRequestMode::DEFAULT);
+	                                           S3PostRequestMode post_request_mode = S3PostRequestMode::DEFAULT,
+	                                           const ReceivedResponseCallback &response_callback = {});
 	static unique_ptr<HTTPResponse> RunHandle(EncryptionUtil &encryption_util, S3FileHandle &handle,
 	                                          const string &s3_url, RequestType request_type, const string &version_id,
 	                                          const RequestCallback &request);
@@ -135,14 +139,18 @@ struct S3RequestExecutor {
 private:
 	using CreateDataCallback = std::function<S3RequestData()>;
 	using FinalRequestCallback = std::function<void(const S3RequestData &)>;
+	using FreshConnectionCallback = std::function<void(const S3RequestData &)>;
 	using RefreshCallback = std::function<bool(const S3RequestData &)>;
 	using SetRegionCallback = std::function<void(const S3RequestData &, const string &)>;
 
 	static unique_ptr<HTTPResponse> Run(const string &s3_url, const CreateDataCallback &create_data,
 	                                    const RequestCallback &request, const RefreshCallback &refresh_auth_params,
 	                                    const SetRegionCallback &set_region, const FinalRequestCallback &final_request,
-	                                    S3PostRequestMode post_request_mode = S3PostRequestMode::DEFAULT);
+	                                    const FreshConnectionCallback &fresh_connection,
+	                                    S3PostRequestMode post_request_mode = S3PostRequestMode::DEFAULT,
+	                                    const ReceivedResponseCallback &response_callback = {});
 	static bool TryRefreshSession(HTTPRequestSession &session, const S3RequestData &request_data);
+	static void InvalidateSessionConnections(HTTPRequestSession &session, HTTPFSParams &params);
 	static S3RequestData CreateRequestData(EncryptionUtil &encryption_util, const CapturedHTTPRequestSnapshot &captured,
 	                                       const string &s3_url, RequestType request_type, S3RequestTarget target,
 	                                       const CreateQueryCallback &create_query, const string &payload_hash = "",

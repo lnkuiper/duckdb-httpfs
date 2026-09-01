@@ -621,7 +621,8 @@ static bool ShouldRetryReceivedResponse(const S3RequestData &request_data, const
 unique_ptr<HTTPResponse>
 S3RequestExecutor::Run(const string &s3_url, const CreateDataCallback &create_data, const RequestCallback &request,
                        const RefreshCallback &refresh_auth_params, const SetRegionCallback &set_region,
-                       const FinalRequestCallback &final_request, S3PostRequestMode post_request_mode) {
+                       const FinalRequestCallback &final_request, const FreshConnectionCallback &fresh_connection,
+                       S3PostRequestMode post_request_mode, const ReceivedResponseCallback &response_callback) {
 	// Auth refresh and region redirect are one-shot; transient responses follow the configured HTTP retry policy.
 	bool retried_auth_refresh = false;
 	bool retried_region = false;
@@ -647,6 +648,15 @@ S3RequestExecutor::Run(const string &s3_url, const CreateDataCallback &create_da
 			}
 			if (received_response && transient_retries < http_params.retries &&
 			    ShouldRetryReceivedResponse(request_data, *result, post_request_mode)) {
+				SleepForRetry(http_params, transient_retries, transient_wait_ms);
+				transient_retries++;
+				continue;
+			}
+			if (received_response && response_callback &&
+			    response_callback(request_data, *result) == S3ReceivedResponseAction::RETRY_FRESH_CONNECTION &&
+			    transient_retries < http_params.retries) {
+				D_ASSERT(fresh_connection);
+				fresh_connection(request_data);
 				SleepForRetry(http_params, transient_retries, transient_wait_ms);
 				transient_retries++;
 				continue;
@@ -754,7 +764,8 @@ S3RequestExecutor::RunSession(EncryptionUtil &encryption_util, HTTPRequestSessio
                               RequestType request_type, S3RequestTarget target, const CreateQueryCallback &create_query,
                               const string &payload_hash, const string &content_type, const string &content_md5,
                               const RequestCallback &request, const RegionRedirectCallback &region_redirect,
-                              optional_ptr<S3RequestContext> request_context, S3PostRequestMode post_request_mode) {
+                              optional_ptr<S3RequestContext> request_context, S3PostRequestMode post_request_mode,
+                              const ReceivedResponseCallback &response_callback) {
 	return S3RequestExecutor::Run(
 	    s3_url,
 	    [&]() {
@@ -776,7 +787,11 @@ S3RequestExecutor::RunSession(EncryptionUtil &encryption_util, HTTPRequestSessio
 			    request_context->display_url = request_data.display_url;
 		    }
 	    },
-	    post_request_mode);
+	    [&](const S3RequestData &request_data) {
+		    auto &params = request_data.http_params->Cast<HTTPFSParams>();
+		    S3RequestExecutor::InvalidateSessionConnections(session, params);
+	    },
+	    post_request_mode, response_callback);
 }
 
 unique_ptr<HTTPResponse> S3RequestExecutor::RunHandle(EncryptionUtil &encryption_util, S3FileHandle &s3_handle,
@@ -803,18 +818,19 @@ unique_ptr<HTTPResponse> S3RequestExecutor::RunHandle(EncryptionUtil &encryption
 			        request_data.display_url, previous_region, correct_region);
 		    }
 	    },
-	    {}, S3PostRequestMode::DEFAULT);
+	    {}, {}, S3PostRequestMode::DEFAULT);
+}
+
+void S3RequestExecutor::InvalidateSessionConnections(HTTPRequestSession &session, HTTPFSParams &params) {
+	session.InvalidateClients();
+	if (params.httpfs_util) {
+		params.httpfs_util->ClearCachedConnections();
+	}
 }
 
 unique_ptr<HTTPResponse> S3RequestExecutor::SendSessionRequest(HTTPRequestSession &session,
                                                                const CapturedHTTPRequestSnapshot &captured,
                                                                HTTPFSParams &params, BaseRequest &request) {
-	auto invalidate_connections = [&]() {
-		session.InvalidateClients();
-		if (params.httpfs_util) {
-			params.httpfs_util->ClearCachedConnections();
-		}
-	};
 	auto lease = session.AcquireClient(captured, params, request.proto_host_port);
 	try {
 		auto response = params.http_util.Request(request, lease.Client());
@@ -824,13 +840,13 @@ unique_ptr<HTTPResponse> S3RequestExecutor::SendSessionRequest(HTTPRequestSessio
 			lease.Invalidate();
 		}
 		if (request_timeout) {
-			invalidate_connections();
+			InvalidateSessionConnections(session, params);
 		}
 		return response;
 	} catch (std::exception &ex) {
 		lease.Invalidate();
 		if (IsS3RequestTimeoutError(ErrorData(ex))) {
-			invalidate_connections();
+			InvalidateSessionConnections(session, params);
 		}
 		throw;
 	} catch (...) {
