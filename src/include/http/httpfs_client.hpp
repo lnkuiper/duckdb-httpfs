@@ -123,6 +123,8 @@ public:
 class HTTPFSCurlUtil : public HTTPFSUtil {
 public:
 	unique_ptr<HTTPClient> InitializeClient(HTTPParams &http_params, const string &proto_host_port) override;
+	unique_ptr<HTTPClient> InitializeClientExtended(HTTPParams &http_params, const string &proto_host_port,
+	                                                const HTTPClientInitializationOptions &options) override;
 	void CloseClient(unique_ptr<HTTPClient> &&client) override;
 	void ClearCachedConnections() override;
 	HTTPClientReuseMode GetClientReuseMode() const override;
