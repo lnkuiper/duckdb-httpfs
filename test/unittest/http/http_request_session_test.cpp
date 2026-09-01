@@ -13,8 +13,10 @@ namespace {
 struct ClientLifecycle {
 	idx_t initialized = 0;
 	idx_t client_initializations = 0;
+	idx_t extended_client_initializations = 0;
 	idx_t closed = 0;
 	idx_t destroyed = 0;
+	HTTPClientCachePolicy last_cache_policy = HTTPClientCachePolicy::DEFAULT;
 	shared_ptr<HTTPState> last_state;
 };
 
@@ -43,6 +45,9 @@ public:
 		return Success();
 	}
 	unique_ptr<HTTPResponse> Head(HeadRequestInfo &) override {
+		if (on_head) {
+			return on_head();
+		}
 		return Success();
 	}
 	unique_ptr<HTTPResponse> Delete(DeleteRequestInfo &) override {
@@ -62,6 +67,7 @@ private:
 
 public:
 	std::function<void()> on_initialize;
+	std::function<unique_ptr<HTTPResponse>()> on_head;
 
 private:
 	ClientLifecycle &lifecycle;
@@ -80,8 +86,16 @@ public:
 		}
 		auto result = make_uniq<TrackingHTTPClient>(proto_host_port, lifecycle);
 		result->on_initialize = on_client_initialize;
+		result->on_head = on_head;
 		result->Initialize(params);
 		return result;
+	}
+
+	unique_ptr<HTTPClient> InitializeClientExtended(HTTPParams &params, const string &proto_host_port,
+	                                                const HTTPClientInitializationOptions &options) override {
+		lifecycle.extended_client_initializations++;
+		lifecycle.last_cache_policy = options.cache_policy;
+		return InitializeClient(params, proto_host_port);
 	}
 
 	void CloseClient(unique_ptr<HTTPClient> &&client) override {
@@ -102,6 +116,7 @@ public:
 	std::function<void()> on_initialize;
 	std::function<void()> on_client_initialize;
 	std::function<void()> on_close;
+	std::function<unique_ptr<HTTPResponse>()> on_head;
 };
 
 static HTTPFSParams CreateParams(TrackingHTTPUtil &http_util) {
@@ -300,6 +315,62 @@ TEST_CASE("HTTP request sessions discard clients that fail reinitialization", "[
 	}
 	REQUIRE(lifecycle.initialized == 2);
 	REQUIRE(lifecycle.destroyed == 1);
+}
+
+TEST_CASE("HTTP transport retries bypass the client cache", "[httpfs][request-session]") {
+	ClientLifecycle lifecycle;
+	TrackingHTTPUtil http_util(lifecycle);
+	auto params = CreateParams(http_util);
+	params.retries = 1;
+	params.retry_wait_ms = 0;
+	idx_t requests = 0;
+	http_util.on_head = [&]() {
+		requests++;
+		if (requests == 1) {
+			auto response = make_uniq<HTTPResponse>(HTTPStatusCode::INVALID);
+			response->request_error = "stale connection";
+			return response;
+		}
+		REQUIRE(lifecycle.extended_client_initializations == 1);
+		REQUIRE(lifecycle.last_cache_policy == HTTPClientCachePolicy::BYPASS_CACHE);
+		return make_uniq<HTTPResponse>(HTTPStatusCode::OK_200);
+	};
+
+	HeadRequestInfo request("http://localhost/test", HTTPHeaders(), params);
+	auto response = http_util.Request(request);
+	REQUIRE(response);
+	REQUIRE(response->Success());
+	REQUIRE(requests == 2);
+	REQUIRE(lifecycle.initialized == 2);
+	REQUIRE(lifecycle.extended_client_initializations == 1);
+	REQUIRE(lifecycle.last_cache_policy == HTTPClientCachePolicy::BYPASS_CACHE);
+}
+
+TEST_CASE("HTTP status retries allow cached clients", "[httpfs][request-session]") {
+	ClientLifecycle lifecycle;
+	TrackingHTTPUtil http_util(lifecycle);
+	auto params = CreateParams(http_util);
+	params.retries = 1;
+	params.retry_wait_ms = 0;
+	idx_t requests = 0;
+	http_util.on_head = [&]() {
+		requests++;
+		if (requests == 1) {
+			return make_uniq<HTTPResponse>(HTTPStatusCode::InternalServerError_500);
+		}
+		REQUIRE(lifecycle.extended_client_initializations == 1);
+		REQUIRE(lifecycle.last_cache_policy == HTTPClientCachePolicy::DEFAULT);
+		return make_uniq<HTTPResponse>(HTTPStatusCode::OK_200);
+	};
+
+	HeadRequestInfo request("http://localhost/test", HTTPHeaders(), params);
+	auto response = http_util.Request(request);
+	REQUIRE(response);
+	REQUIRE(response->Success());
+	REQUIRE(requests == 2);
+	REQUIRE(lifecycle.initialized == 2);
+	REQUIRE(lifecycle.extended_client_initializations == 1);
+	REQUIRE(lifecycle.last_cache_policy == HTTPClientCachePolicy::DEFAULT);
 }
 
 TEST_CASE("HTTP request snapshots copy HTTPFS parameters through one source", "[httpfs][request-session]") {

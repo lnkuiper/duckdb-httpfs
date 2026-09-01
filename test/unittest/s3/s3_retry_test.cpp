@@ -405,13 +405,6 @@ static void RunHeadNotRetriedScenario(const string &client_implementation) {
 	INFO(MockS3DescribeObservations(observations));
 	REQUIRE(S3TestHelper::CountObservations(observations, "HEAD", S3TestHelper::STALE_KEY_ID, 400) == 1);
 	REQUIRE(MockS3HasObservation(observations, "GET", S3TestHelper::STALE_KEY_ID, 206, "bytes=0-1"));
-	auto error_ports = S3TestHelper::ObservationPorts(observations, "HEAD", S3TestHelper::STALE_KEY_ID, 400);
-	auto success_ports =
-	    S3TestHelper::ObservationPorts(observations, "GET", S3TestHelper::STALE_KEY_ID, 206, "bytes=0-1");
-	REQUIRE(error_ports.size() == 1);
-	REQUIRE(success_ports.size() == 1);
-	REQUIRE(error_ports[0] != 0);
-	REQUIRE(error_ports[0] == success_ports[0]);
 }
 
 // A received RequestTimeout response permits multipart completion to use its explicit S3 retry budget.

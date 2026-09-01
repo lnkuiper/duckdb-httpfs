@@ -39,8 +39,6 @@ public:
 	CompletionObservations(const vector<MockS3RequestObservation> &observations);
 	static void RequireCompletionIdentity(const vector<MockS3RequestObservation> &observations,
 	                                      idx_t expected_attempts);
-	static vector<int> ObservationPorts(const vector<MockS3RequestObservation> &observations, const string &method,
-	                                    const string &key_id, int status, const string &range = string());
 	static void WriteMultipartPayload(Connection &con);
 	static void WriteSinglePutPayload(Connection &con);
 

@@ -733,6 +733,14 @@ unique_ptr<HTTPClient> HTTPFSCurlUtil::InitializeClient(HTTPParams &http_params,
 	return std::move(client);
 }
 
+unique_ptr<HTTPClient> HTTPFSCurlUtil::InitializeClientExtended(HTTPParams &http_params, const string &proto_host_port,
+                                                                const HTTPClientInitializationOptions &options) {
+	if (options.cache_policy == HTTPClientCachePolicy::BYPASS_CACHE) {
+		return make_uniq<HTTPFSCurlClient>(http_params.Cast<HTTPFSParams>(), proto_host_port);
+	}
+	return InitializeClient(http_params, proto_host_port);
+}
+
 string HTTPFSCurlUtil::GetName() const {
 	return "HTTPFS-Curl";
 }

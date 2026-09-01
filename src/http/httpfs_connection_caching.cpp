@@ -149,7 +149,11 @@ unique_ptr<HTTPResponse> HTTPFSCurlUtil::CachingSendRequest(BaseRequest &request
 
 	// Only cache if the caller didn't provide the client — otherwise the caller manages its lifecycle
 	if (!caller_owns_client) {
-		connection_cache.Store(std::move(client));
+		if (r && !r->HasRequestError()) {
+			connection_cache.Store(std::move(client));
+		} else {
+			client.reset();
+		}
 	}
 	return r;
 }
