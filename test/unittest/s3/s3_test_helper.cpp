@@ -311,18 +311,6 @@ void S3TestHelper::RequireCompletionIdentity(const vector<MockS3RequestObservati
 	}
 }
 
-vector<int> S3TestHelper::ObservationPorts(const vector<MockS3RequestObservation> &observations, const string &method,
-                                           const string &key_id, int status, const string &range) {
-	vector<int> result;
-	for (auto &observation : observations) {
-		if (observation.method == method && observation.key_id == key_id && observation.status == status &&
-		    observation.range == range) {
-			result.push_back(observation.remote_port);
-		}
-	}
-	return result;
-}
-
 void S3TestHelper::WriteMultipartPayload(Connection &con) {
 	RequireQueryOk(con, "SET s3_uploader_max_filesize='50GB'");
 	auto &fs = FileSystem::GetFileSystem(*con.context);
