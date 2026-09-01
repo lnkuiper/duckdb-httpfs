@@ -698,21 +698,37 @@ public:
 	void SendListObjectsSuccess(const httplib::Request &request, httplib::Response &response) const {
 		response.status = 200;
 		auto unquoted_etag = StringUtil::Replace(config.metadata.etag, "\"", "");
+		auto first_page = config.list.paginate && GetParameter(request, "continuation-token").empty();
+		auto key = first_page ? "first-page.bin" : config.object.key;
+		auto continuation = first_page ? "<NextContinuationToken>page two&amp;token</NextContinuationToken>" : "";
 		response.set_content(StringUtil::Format("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
 		                                        "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
 		                                        "<Name>%s</Name>"
 		                                        "<Prefix></Prefix>"
 		                                        "<KeyCount>1</KeyCount>"
 		                                        "<MaxKeys>1000</MaxKeys>"
-		                                        "<IsTruncated>false</IsTruncated>"
+		                                        "<IsTruncated>%s</IsTruncated>"
+		                                        "%s"
 		                                        "<Contents>"
 		                                        "<Key>%s</Key>"
 		                                        "<ETag>&quot;%s&quot;</ETag>"
 		                                        "<Size>%llu</Size>"
 		                                        "</Contents>"
 		                                        "</ListBucketResult>",
-		                                        config.object.bucket, config.object.key, unquoted_etag,
+		                                        config.object.bucket, first_page ? "true" : "false", continuation, key,
+		                                        unquoted_etag,
 		                                        static_cast<unsigned long long>(config.object.data.size())),
+		                     "application/xml");
+		Record(request, response.status);
+	}
+
+	void SendMalformedListObjectsSuccess(const httplib::Request &request, httplib::Response &response) const {
+		response.status = 200;
+		response.set_content("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+		                     "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+		                     "<Name>refresh-bucket</Name>"
+		                     "<Contents><Key>partial-fake-object.bin</Key><ETag>&quot;fake&quot;</ETag><Size>1</Size>"
+		                     "</Contents>",
 		                     "application/xml");
 		Record(request, response.status);
 	}
@@ -941,6 +957,10 @@ public:
 				SendAuthFailure(request, response);
 				return;
 			}
+			if (config.list.paginate && GetParameter(request, "continuation-token").empty()) {
+				SendListObjectsSuccess(request, response);
+				return;
+			}
 			if (config.failures.transient_503_lists > 0 &&
 			    transient_503_lists_sent.fetch_add(1) < config.failures.transient_503_lists) {
 				SendSlowDown(request, response);
@@ -949,6 +969,11 @@ public:
 			if (config.failures.transient_400_lists > 0 &&
 			    transient_400_lists_sent.fetch_add(1) < config.failures.transient_400_lists) {
 				SendS3Error400(request, response, config.failures.failure_is_request_timeout);
+				return;
+			}
+			if (config.failures.malformed_success_lists > 0 &&
+			    malformed_success_lists_sent.fetch_add(1) < config.failures.malformed_success_lists) {
+				SendMalformedListObjectsSuccess(request, response);
 				return;
 			}
 			SendListObjectsSuccess(request, response);
@@ -1062,6 +1087,7 @@ public:
 	//! Injected request failures
 	mutable atomic<idx_t> transient_503_lists_sent {0};
 	mutable atomic<idx_t> transient_400_lists_sent {0};
+	mutable atomic<idx_t> malformed_success_lists_sent {0};
 	mutable atomic<idx_t> remaining_put_failures {0};
 	mutable atomic<idx_t> remaining_get_failures {0};
 	mutable atomic<idx_t> remaining_range_behavior_requests {0};

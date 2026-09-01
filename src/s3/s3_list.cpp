@@ -271,7 +271,8 @@ bool S3FileSystem::ListFilesExtended(const string &directory, const std::functio
 }
 
 struct S3ListRequest {
-	static S3ListObjectsV2Result Finish(const S3RequestContext &request_context, unique_ptr<HTTPResponse> response) {
+	static S3ListObjectsV2Result Finish(const S3RequestContext &request_context, unique_ptr<HTTPResponse> response,
+	                                    optional<S3ListObjectsV2Result> result) {
 		if (response->HasRequestError() || response->status != HTTPStatusCode::OK_200) {
 			auto display_url = request_context.display_url;
 			StringUtil::RTrim(display_url, "/");
@@ -281,11 +282,10 @@ struct S3ListRequest {
 			throw S3RequestUtil::GetError(request_context.auth_params, *response, request_context.request_type,
 			                              "listing", display_url);
 		}
-		S3ListObjectsV2Result result;
-		if (!S3XMLResponseParser::TryParseListObjectsV2(response->body, result)) {
+		if (!result) {
 			throw IOException("Malformed S3 list response for \"%s\"", request_context.display_url);
 		}
-		return result;
+		return std::move(*result);
 	}
 
 	static S3RequestQuery BuildQuery(const ParsedS3Url &parsed_url, const string &continuation_token, S3ListMode mode,
@@ -311,6 +311,7 @@ S3ListObjectsV2Result AWSListObjectV2::Request(EncryptionUtil &encryption_util, 
                                                const string &path, const string &continuation_token, S3ListMode mode,
                                                optional_idx max_keys) {
 	S3RequestContext request_context;
+	optional<S3ListObjectsV2Result> parsed_result;
 	auto response = S3RequestExecutor::RunSession(
 	    encryption_util, session, path, RequestType::GET_REQUEST, S3RequestTarget::BUCKET,
 	    [&](const ParsedS3Url &parsed_url) {
@@ -330,8 +331,20 @@ S3ListObjectsV2Result AWSListObjectV2::Request(EncryptionUtil &encryption_util, 
 		        "Consider setting the S3 region to this explicitly to avoid extra round-trips.",
 		        request_data.display_url, previous_region, correct_region);
 	    },
-	    request_context);
-	return S3ListRequest::Finish(request_context, std::move(response));
+	    request_context, S3PostRequestMode::DEFAULT,
+	    [&](const S3RequestData &, const HTTPResponse &response) {
+		    parsed_result.reset();
+		    if (response.HasRequestError() || response.status != HTTPStatusCode::OK_200) {
+			    return S3ReceivedResponseAction::ACCEPT;
+		    }
+		    S3ListObjectsV2Result attempt_result;
+		    if (!S3XMLResponseParser::TryParseListObjectsV2(response.body, attempt_result)) {
+			    return S3ReceivedResponseAction::RETRY_FRESH_CONNECTION;
+		    }
+		    parsed_result = std::move(attempt_result);
+		    return S3ReceivedResponseAction::ACCEPT;
+	    });
+	return S3ListRequest::Finish(request_context, std::move(response), std::move(parsed_result));
 }
 
 void AWSListObjectV2::AppendFileList(const S3ListObjectsV2Result &response, vector<OpenFileInfo> &result) {

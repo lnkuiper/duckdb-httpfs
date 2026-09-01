@@ -558,11 +558,14 @@ static void RunAllTransientRetryScenarios(const string &client_implementation) {
 }
 
 static void ConfigureListRetryTest(DuckDB &db, Connection &con, MockS3Server &server,
-                                   const string &client_implementation, idx_t retries) {
+                                   const string &client_implementation, idx_t retries,
+                                   bool connection_caching = false) {
 	S3TestHelper::LoadExtension(db);
 
 	S3TestHelper::RequireQueryOk(con,
 	                             StringUtil::Format("SET httpfs_client_implementation='%s'", client_implementation));
+	S3TestHelper::RequireQueryOk(
+	    con, StringUtil::Format("SET httpfs_connection_caching=%s", connection_caching ? "true" : "false"));
 	S3TestHelper::RequireQueryOk(con, "SET http_retries=" + to_string(retries));
 	S3TestHelper::RequireQueryOk(con, "SET http_retry_wait_ms=1");
 	S3TestHelper::RequireQueryOk(con, "SET http_retry_backoff=2");
@@ -590,6 +593,139 @@ static idx_t CountListObservations(const vector<MockS3RequestObservation> &obser
 		}
 	}
 	return result;
+}
+
+static vector<MockS3RequestObservation> GetListObservations(const vector<MockS3RequestObservation> &observations) {
+	vector<MockS3RequestObservation> result;
+	for (auto &observation : observations) {
+		if (observation.method == "GET" && observation.target.find("list-type=2") != string::npos) {
+			result.push_back(observation);
+		}
+	}
+	return result;
+}
+
+static void RequireIdenticalFreshListAttempts(const vector<MockS3RequestObservation> &observations,
+                                              idx_t expected_attempts) {
+	auto lists = GetListObservations(observations);
+	REQUIRE(lists.size() == expected_attempts);
+	for (idx_t i = 0; i < lists.size(); i++) {
+		REQUIRE(lists[i].target == lists[0].target);
+		REQUIRE(lists[i].remote_port != 0);
+		if (i > 0) {
+			REQUIRE(lists[i].remote_port != lists[i - 1].remote_port);
+		}
+	}
+}
+
+static void RunMalformedListRecoveryTest(const string &client_implementation, bool connection_caching) {
+	MockS3ServerConfig config;
+	config.failures.malformed_success_lists = 2;
+	MockS3Server server(std::move(config));
+
+	DuckDB db(nullptr);
+	Connection con(db);
+	ConfigureListRetryTest(db, con, server, client_implementation, 2, connection_caching);
+
+	auto result = con.Query("SELECT file FROM glob('s3://refresh-bucket/*.bin') ORDER BY file");
+	REQUIRE(result);
+	auto observations = server.Observations();
+	INFO((result->HasError() ? result->GetError() : string()));
+	INFO(MockS3DescribeObservations(observations));
+	REQUIRE_FALSE(result->HasError());
+	REQUIRE(result->RowCount() == 1);
+	REQUIRE(result->GetValue(0, 0).ToString() == "s3://refresh-bucket/object.bin");
+	RequireIdenticalFreshListAttempts(observations, 3);
+}
+
+static void RunMalformedPaginatedListRecoveryTest() {
+	MockS3ServerConfig config;
+	config.failures.malformed_success_lists = 2;
+	config.list.paginate = true;
+	MockS3Server server(std::move(config));
+
+	DuckDB db(nullptr);
+	Connection con(db);
+	ConfigureListRetryTest(db, con, server, "httplib", 2);
+
+	auto result = con.Query("SELECT file FROM glob('s3://refresh-bucket/*.bin') ORDER BY file");
+	REQUIRE(result);
+	auto observations = server.Observations();
+	INFO((result->HasError() ? result->GetError() : string()));
+	INFO(MockS3DescribeObservations(observations));
+	REQUIRE_FALSE(result->HasError());
+	REQUIRE(result->RowCount() == 2);
+	REQUIRE(result->GetValue(0, 0).ToString() == "s3://refresh-bucket/first-page.bin");
+	REQUIRE(result->GetValue(0, 1).ToString() == "s3://refresh-bucket/object.bin");
+
+	auto lists = GetListObservations(observations);
+	REQUIRE(lists.size() == 4);
+	REQUIRE(lists[0].target.find("continuation-token=") == string::npos);
+	vector<MockS3RequestObservation> second_page_attempts(lists.begin() + 1, lists.end());
+	REQUIRE(second_page_attempts[0].target.find("continuation-token=") != string::npos);
+	RequireIdenticalFreshListAttempts(second_page_attempts, 3);
+}
+
+static void RunMalformedListExhaustionTest(const string &client_implementation) {
+	MockS3ServerConfig config;
+	config.failures.malformed_success_lists = 1000;
+	MockS3Server server(std::move(config));
+
+	DuckDB db(nullptr);
+	Connection con(db);
+	ConfigureListRetryTest(db, con, server, client_implementation, 2);
+
+	auto result = con.Query("SELECT file FROM glob('s3://refresh-bucket/*.bin')");
+	REQUIRE(result);
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "Malformed S3 list response"));
+
+	auto observations = server.Observations();
+	INFO(MockS3DescribeObservations(observations));
+	RequireIdenticalFreshListAttempts(observations, 3);
+}
+
+static void RunMalformedListWithoutRetriesTest(const string &client_implementation) {
+	MockS3ServerConfig config;
+	config.failures.malformed_success_lists = 1;
+	MockS3Server server(std::move(config));
+
+	DuckDB db(nullptr);
+	Connection con(db);
+	ConfigureListRetryTest(db, con, server, client_implementation, 0);
+
+	auto result = con.Query("SELECT file FROM glob('s3://refresh-bucket/*.bin')");
+	REQUIRE(result);
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "Malformed S3 list response"));
+
+	auto observations = server.Observations();
+	INFO(MockS3DescribeObservations(observations));
+	REQUIRE(GetListObservations(observations).size() == 1);
+}
+
+static void RunMixedListRetryBudgetTest(const string &client_implementation) {
+	MockS3ServerConfig config;
+	config.failures.transient_400_lists = 1;
+	config.failures.malformed_success_lists = 1;
+	MockS3Server server(std::move(config));
+
+	DuckDB db(nullptr);
+	Connection con(db);
+	ConfigureListRetryTest(db, con, server, client_implementation, 1);
+
+	auto result = con.Query("SELECT file FROM glob('s3://refresh-bucket/*.bin')");
+	REQUIRE(result);
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "Malformed S3 list response"));
+
+	auto observations = server.Observations();
+	INFO(MockS3DescribeObservations(observations));
+	auto lists = GetListObservations(observations);
+	REQUIRE(lists.size() == 2);
+	REQUIRE(lists[0].status == 400);
+	REQUIRE(lists[1].status == 200);
+	REQUIRE(lists[0].target == lists[1].target);
 }
 
 static void RunRecoveringListRetryTest(const string &client_implementation, int status) {
@@ -723,6 +859,48 @@ TEST_CASE("S3 glob does not retry a generic ListObjectsV2 400", "[httpfs][s3][re
 	}
 	SECTION("curl") {
 		RunGeneric400ListTest("curl");
+	}
+}
+
+TEST_CASE("S3 glob retries malformed successful ListObjectsV2 responses", "[httpfs][s3][retry]") {
+	SECTION("httplib uses fresh session-local connections") {
+		RunMalformedListRecoveryTest("httplib", false);
+	}
+	SECTION("curl uses fresh session-local connections") {
+		RunMalformedListRecoveryTest("curl", false);
+	}
+	SECTION("curl clears shared cached connections") {
+		RunMalformedListRecoveryTest("curl", true);
+	}
+	SECTION("replays the exact paginated request") {
+		RunMalformedPaginatedListRecoveryTest();
+	}
+}
+
+TEST_CASE("S3 glob exhausts malformed successful ListObjectsV2 retries", "[httpfs][s3][retry]") {
+	SECTION("httplib") {
+		RunMalformedListExhaustionTest("httplib");
+	}
+	SECTION("curl") {
+		RunMalformedListExhaustionTest("curl");
+	}
+}
+
+TEST_CASE("S3 glob honors zero retries for malformed successful ListObjectsV2 responses", "[httpfs][s3][retry]") {
+	SECTION("httplib") {
+		RunMalformedListWithoutRetriesTest("httplib");
+	}
+	SECTION("curl") {
+		RunMalformedListWithoutRetriesTest("curl");
+	}
+}
+
+TEST_CASE("S3 ListObjectsV2 response failures share one retry budget", "[httpfs][s3][retry]") {
+	SECTION("httplib") {
+		RunMixedListRetryBudgetTest("httplib");
+	}
+	SECTION("curl") {
+		RunMixedListRetryBudgetTest("curl");
 	}
 }
 
