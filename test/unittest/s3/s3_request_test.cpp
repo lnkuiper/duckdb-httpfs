@@ -727,11 +727,13 @@ TEST_CASE("S3 URL style validation happens before request dispatch", "[httpfs][s
 	S3TestHelper::RequireQueryOk(con, "ROLLBACK");
 
 	DBConfig::GetConfig(*db.instance).SetOptionByName("s3_url_style", Value("handwritten"));
-	S3TestHelper::RequireQueryOk(con, "BEGIN TRANSACTION");
-	REQUIRE_THROWS(fs.OpenFile(string(S3TestHelper::S3_PATH) + "?s3_url_style=path",
-	                           FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_DIRECT_IO));
+	Connection invalid_con(db);
+	S3TestHelper::RequireQueryOk(invalid_con, "BEGIN TRANSACTION");
+	auto &invalid_fs = FileSystem::GetFileSystem(*invalid_con.context);
+	REQUIRE_THROWS(invalid_fs.OpenFile(string(S3TestHelper::S3_PATH) + "?s3_url_style=path",
+	                                   FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_DIRECT_IO));
 	REQUIRE(server.Observations().empty());
-	S3TestHelper::RequireQueryOk(con, "ROLLBACK");
+	S3TestHelper::RequireQueryOk(invalid_con, "ROLLBACK");
 }
 
 TEST_CASE("S3 URL query settings are resolved independently of the HTTP client", "[httpfs][s3][url]") {

@@ -480,6 +480,7 @@ CREATE SECRET refresh_s3_endpoint_mode (
 	REFRESH_INFO MAP {
 		'KEY_ID': '%s',
 		'SECRET': '%s',
+		'REGION': 'us-east-1',
 		'ENDPOINT': '%s',
 		'TEST_ID': '%s'
 	}
