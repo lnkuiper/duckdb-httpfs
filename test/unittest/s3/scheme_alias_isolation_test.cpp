@@ -90,6 +90,7 @@ TEST_CASE("a required endpoint may arrive from any source, but must arrive", "[h
 			S3Provider::InitializeAuthParams(params);
 			auto parsed = S3Url::Resolve(string(test_case.url) + "?s3_endpoint=storage.example.com", params);
 			REQUIRE(params.endpoint == "storage.example.com");
+			REQUIRE(params.endpoint_mode == S3EndpointMode::EXPLICIT);
 			REQUIRE(parsed.host == "bucket.storage.example.com");
 		}
 	}
@@ -98,7 +99,7 @@ TEST_CASE("a required endpoint may arrive from any source, but must arrive", "[h
 		for (auto &test_case : CASES) {
 			for (const auto &cleared : {"", "%20"}) {
 				auto params = make_params(test_case);
-				params.endpoint = "storage.example.com";
+				params.SetEndpoint("storage.example.com");
 				S3Provider::InitializeAuthParams(params);
 				REQUIRE_THROWS(S3Url::Resolve(string(test_case.url) + "?s3_endpoint=" + cleared, params));
 			}

@@ -12,12 +12,14 @@ string S3Url::Encode(const string &input, S3URLEncodeMode mode) {
 	return StringUtil::URLEncode(input, mode == S3URLEncodeMode::QUERY_COMPONENT);
 }
 
-static void GetQueryParam(const string &key, string &param, unordered_map<string, string> &query_params) {
+static bool GetQueryParam(const string &key, string &param, unordered_map<string, string> &query_params) {
 	auto found_param = query_params.find(key);
-	if (found_param != query_params.end()) {
-		param = found_param->second;
-		query_params.erase(found_param);
+	if (found_param == query_params.end()) {
+		return false;
 	}
+	param = found_param->second;
+	query_params.erase(found_param);
+	return true;
 }
 
 unordered_map<string, string> S3Url::ParseQueryParameters(const string &url_query_param) {
@@ -57,8 +59,13 @@ void S3Url::ReadQueryParams(const string &url_query_param, S3AuthParams &params)
 	GetQueryParam("s3_access_key_id", params.access_key_id, query_params);
 	GetQueryParam("s3_secret_access_key", params.secret_access_key, query_params);
 	GetQueryParam("s3_session_token", params.session_token, query_params);
-	GetQueryParam("s3_endpoint", params.endpoint, query_params);
-	GetQueryParam("s3_url_style", params.url_style, query_params);
+	string endpoint;
+	if (GetQueryParam("s3_endpoint", endpoint, query_params)) {
+		params.SetEndpoint(std::move(endpoint));
+	}
+	if (GetQueryParam("s3_url_style", params.url_style, query_params)) {
+		S3Provider::ParseURLStyle(params.url_style);
+	}
 	auto found_param = query_params.find("s3_use_ssl");
 	if (found_param != query_params.end()) {
 		if (found_param->second == "true") {
@@ -168,9 +175,10 @@ ParsedS3Url S3Url::Parse(const string &url, const S3AuthParams &params) {
 
 	// Update host and path according to the url style
 	// See https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html
-	bool use_vhost = params.url_style.empty() || params.url_style == "vhost" || params.url_style == "virtual";
+	auto url_style = S3Provider::ParseURLStyle(params.url_style);
+	bool use_vhost = url_style == S3URLStyle::VIRTUAL_HOSTED;
 	// A bucket name containing periods (.) is not addressable vhost-style over TLS. Fallback to path style url
-	bool use_path = params.url_style == "path" || (use_vhost && params.use_ssl && bucket.find('.') != string::npos);
+	bool use_path = url_style == S3URLStyle::PATH || (use_vhost && params.use_ssl && bucket.find('.') != string::npos);
 	if (use_path) {
 		path += "/" + bucket;
 	} else if (use_vhost) {

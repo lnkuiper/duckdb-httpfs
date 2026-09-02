@@ -31,12 +31,15 @@ S3FileHandle::UploadClaim::~UploadClaim() {
 
 S3FileHandle::S3FileHandle(FileSystem &fs, const OpenFileInfo &file, FileOpenFlags flags,
                            unique_ptr<HTTPParams> http_params_p, const S3AuthParams &auth_params_p,
-                           const S3UploadConfig &upload_config)
+                           const S3UploadConfig &upload_config,
+                           optional<S3MultipartUploadPolicy> multipart_upload_policy)
     : HTTPFileHandle(fs, file, flags, std::move(http_params_p)) {
 	auto captured = request_session->Capture();
 	auto request_params = captured.snapshot->CreateRequestParams();
 	request_session->TryPublish(captured.snapshot,
-	                            make_shared_ptr<S3RequestSnapshot>(*request_params, auth_params_p, file.path));
+	                            make_shared_ptr<S3RequestSnapshot>(*request_params, auth_params_p, file.path,
+	                                                               weak_ptr<ClientContext>(), true, false, 0,
+	                                                               std::move(multipart_upload_policy)));
 	auto_fallback_to_full_file_download = false;
 	if (flags.OpenForReading() && flags.OpenForWriting()) {
 		throw NotImplementedException("Cannot open an HTTP file for both reading and writing");
@@ -72,7 +75,8 @@ shared_ptr<const HTTPRequestSnapshot> S3FileHandle::CreateRequestSnapshot(const 
 	auto &s3_snapshot = captured.snapshot->Cast<S3RequestSnapshot>();
 	return make_shared_ptr<S3RequestSnapshot>(params, s3_snapshot.auth_params, s3_snapshot.refresh_path,
 	                                          s3_snapshot.client_context, s3_snapshot.credential_refresh_enabled,
-	                                          s3_snapshot.region_redirected, s3_snapshot.credential_generation);
+	                                          s3_snapshot.region_redirected, s3_snapshot.credential_generation,
+	                                          s3_snapshot.multipart_upload_policy);
 }
 
 S3FileHandle::~S3FileHandle() = default;
@@ -182,11 +186,14 @@ unique_ptr<HTTPFileHandle> S3FileSystem::CreateHandle(const OpenFileInfo &file, 
 	auto &http_util = HTTPFSUtil::GetHTTPUtil(opener);
 	auto params = http_util.InitializeParameters(opener, info);
 	S3UploadConfig upload_config;
+	optional<S3MultipartUploadPolicy> multipart_upload_policy;
 	if (flags.OpenForWriting()) {
-		upload_config = S3UploadConfig::ReadFrom(opener);
+		multipart_upload_policy = S3Provider::GetMultipartUploadPolicy(auth_params);
+		upload_config = S3UploadConfig::ReadFrom(opener, *multipart_upload_policy);
 	}
 
-	return make_uniq<S3FileHandle>(*this, file, flags, std::move(params), auth_params, upload_config);
+	return make_uniq<S3FileHandle>(*this, file, flags, std::move(params), auth_params, upload_config,
+	                               std::move(multipart_upload_policy));
 }
 
 void S3FileHandle::InitializeFromCacheEntry(const HTTPMetadataCacheEntry &cache_entry) {
@@ -218,10 +225,11 @@ void S3FileHandle::Initialize(optional_ptr<FileOpener> opener) {
 		if (context && refresh_enabled) {
 			weak_context = context->shared_from_this();
 		}
-		request_session->TryPublish(captured.snapshot, make_shared_ptr<S3RequestSnapshot>(
-		                                                   *request_params, snapshot.auth_params, snapshot.refresh_path,
-		                                                   std::move(weak_context), refresh_enabled,
-		                                                   snapshot.region_redirected, snapshot.credential_generation));
+		request_session->TryPublish(
+		    captured.snapshot,
+		    make_shared_ptr<S3RequestSnapshot>(*request_params, snapshot.auth_params, snapshot.refresh_path,
+		                                       std::move(weak_context), refresh_enabled, snapshot.region_redirected,
+		                                       snapshot.credential_generation, snapshot.multipart_upload_policy));
 	}
 	HTTPFileHandle::Initialize(opener);
 }

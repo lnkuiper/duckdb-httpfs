@@ -4,6 +4,7 @@
 #include "s3/s3_test_helper.hpp"
 
 #include "create_secret_functions.hpp"
+#include "crypto.hpp"
 #include "http/httpfs_client.hpp"
 #include "s3/s3fs.hpp"
 
@@ -12,6 +13,7 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/client_context_file_opener.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 
 #include <atomic>
@@ -456,6 +458,80 @@ static void RunRefreshPublicationScenario(const string &client_implementation, b
 	S3TestHelper::AssertSingleRefresh(test_id);
 }
 
+static void RunEndpointModeRefreshScenario(const string &initial_endpoint, const string &initial_resolved_endpoint,
+                                           S3EndpointMode initial_mode, const string &refreshed_endpoint,
+                                           const string &refreshed_resolved_endpoint, S3EndpointMode refreshed_mode,
+                                           const string &published_region = string()) {
+	DuckDB db(nullptr);
+	Connection con(db);
+	S3TestHelper::LoadExtension(db);
+	S3TestHelper::RegisterRefreshProvider(db);
+	auto test_id = S3TestHelper::NextTestId();
+	S3TestHelper::RequireQueryOk(con, StringUtil::Format(R"(
+CREATE SECRET refresh_s3_endpoint_mode (
+	TYPE S3,
+	PROVIDER %s,
+	SCOPE 's3://refresh-bucket/',
+	KEY_ID '%s',
+	SECRET '%s',
+	REGION 'us-east-1',
+	ENDPOINT '%s',
+	TEST_ID '%s',
+	REFRESH_INFO MAP {
+		'KEY_ID': '%s',
+		'SECRET': '%s',
+		'REGION': 'us-east-1',
+		'ENDPOINT': '%s',
+		'TEST_ID': '%s'
+	}
+))",
+	                                                     S3TestHelper::TEST_PROVIDER, S3TestHelper::STALE_KEY_ID,
+	                                                     S3TestHelper::STALE_SECRET, initial_endpoint, test_id,
+	                                                     S3TestHelper::FRESH_KEY_ID, S3TestHelper::FRESH_SECRET,
+	                                                     refreshed_endpoint, test_id));
+
+	S3TestHelper::RequireQueryOk(con, "BEGIN TRANSACTION");
+	ClientContextFileOpener opener(*con.context);
+	FileOpenerInfo info = {S3TestHelper::S3_PATH};
+	auto auth_params = S3AuthParams::ReadFrom(opener, info);
+	REQUIRE(auth_params.endpoint_mode == initial_mode);
+	auto session = S3RequestExecutor::CreateSession(opener, S3TestHelper::S3_PATH, auth_params);
+	if (!published_region.empty()) {
+		string previous_region;
+		REQUIRE(S3RequestExecutor::SetSessionRegion(*session, published_region, previous_region));
+		REQUIRE(previous_region == "us-east-1");
+	}
+	::AESStateSSLFactory encryption_util;
+	vector<S3EndpointMode> observed_modes;
+	vector<string> observed_endpoints;
+	vector<string> observed_regions;
+	auto response = S3RequestExecutor::RunSession(
+	    encryption_util, *session, S3TestHelper::S3_PATH, RequestType::GET_REQUEST, S3RequestTarget::OBJECT,
+	    [](const ParsedS3Url &) { return S3RequestQuery(); }, "", "", "",
+	    [&](S3RequestData &request_data) {
+		    observed_modes.push_back(request_data.auth_params.endpoint_mode);
+		    observed_endpoints.push_back(request_data.auth_params.endpoint);
+		    observed_regions.push_back(request_data.auth_params.region);
+		    if (observed_modes.size() == 1) {
+			    auto result = make_uniq<HTTPResponse>(HTTPStatusCode::Forbidden_403);
+			    result->body = "<Error><Code>AccessDenied</Code><Message>stale credentials</Message></Error>";
+			    return result;
+		    }
+		    return make_uniq<HTTPResponse>(HTTPStatusCode::OK_200);
+	    });
+	REQUIRE(response);
+	REQUIRE(response->status == HTTPStatusCode::OK_200);
+	REQUIRE(observed_modes == vector<S3EndpointMode> {initial_mode, refreshed_mode});
+	REQUIRE(observed_endpoints == vector<string> {initial_resolved_endpoint, refreshed_resolved_endpoint});
+	auto expected_region = published_region.empty() ? string("us-east-1") : published_region;
+	REQUIRE(observed_regions == vector<string> {expected_region, expected_region});
+	auto &snapshot = session->Capture().snapshot->Cast<S3RequestSnapshot>();
+	REQUIRE(snapshot.auth_params.endpoint_mode == refreshed_mode);
+	REQUIRE(snapshot.auth_params.endpoint == refreshed_resolved_endpoint);
+	S3TestHelper::RequireQueryOk(con, "COMMIT");
+	S3TestHelper::AssertSingleRefresh(test_id);
+}
+
 static void RunConfiguredHeaderRefreshScenario(const string &client_implementation, bool refresh_to_reserved_header) {
 	MockS3ServerConfig config;
 	config.object.bucket = S3TestHelper::BUCKET;
@@ -629,6 +705,19 @@ TEST_CASE("S3 credential refresh composes with a concurrent region publication",
 	}
 	SECTION("curl") {
 		RunRefreshPublicationScenario("curl", false, true);
+	}
+}
+
+TEST_CASE("S3 credential refresh reconstructs endpoint provenance", "[httpfs][s3][refresh][endpoint]") {
+	SECTION("explicit to automatic") {
+		RunEndpointModeRefreshScenario("s3.dualstack.us-east-1.amazonaws.com", "s3.dualstack.us-east-1.amazonaws.com",
+		                               S3EndpointMode::EXPLICIT, "s3.amazonaws.com", "s3.us-east-1.amazonaws.com",
+		                               S3EndpointMode::AUTOMATIC);
+	}
+	SECTION("automatic to explicit") {
+		RunEndpointModeRefreshScenario("s3.amazonaws.com", "s3.eu-west-1.amazonaws.com", S3EndpointMode::AUTOMATIC,
+		                               "s3.dualstack.us-east-1.amazonaws.com", "s3.dualstack.us-east-1.amazonaws.com",
+		                               S3EndpointMode::EXPLICIT, "eu-west-1");
 	}
 }
 

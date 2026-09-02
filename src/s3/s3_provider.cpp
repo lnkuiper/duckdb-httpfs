@@ -12,6 +12,12 @@
 
 namespace duckdb {
 
+bool S3MultipartUploadPolicy::operator==(const S3MultipartUploadPolicy &other) const {
+	return part_size_strategy == other.part_size_strategy && minimum_part_size == other.minimum_part_size &&
+	       maximum_part_size == other.maximum_part_size && maximum_part_count == other.maximum_part_count &&
+	       maximum_object_size == other.maximum_object_size;
+}
+
 static const array<S3ProviderMatch, 6> &ProviderMatches() {
 	static const array<S3ProviderMatch, 6> provider_matches = {
 	    S3ProviderMatch {S3ProviderType::S3, "s3://"},  S3ProviderMatch {S3ProviderType::S3, "s3a://"},
@@ -218,16 +224,19 @@ void S3Provider::ReadAuthParams(S3KeyValueReader &secret_reader, const string &f
 	                                        "s3_url_compatibility_mode", result.s3_url_compatibility_mode);
 	secret_reader.TryGetSecretKeyOrSetting("requester_pays", "s3_requester_pays", result.requester_pays);
 
-	auto endpoint_result = secret_reader.TryGetSecretKeyOrSetting("endpoint", "s3_endpoint", result.endpoint);
+	string endpoint;
+	auto endpoint_result = secret_reader.TryGetSecretKeyOrSetting("endpoint", "s3_endpoint", endpoint);
 	auto url_style_result = secret_reader.TryGetSecretKeyOrSetting("url_style", "s3_url_style", result.url_style);
 	if (result.provider_type == S3ProviderType::GCS) {
-		if (result.endpoint.empty() || !endpoint_result || endpoint_result.GetScope() != SettingScope::SECRET) {
-			result.endpoint = "storage.googleapis.com";
+		if (endpoint_result && endpoint_result.GetScope() == SettingScope::SECRET) {
+			result.SetEndpoint(std::move(endpoint));
 		}
 		if (result.url_style.empty() || !url_style_result || url_style_result.GetScope() != SettingScope::SECRET) {
 			result.url_style = "path";
 		}
 		secret_reader.TryGetSecretKey("bearer_token", result.oauth2_bearer_token);
+	} else {
+		result.SetEndpoint(std::move(endpoint));
 	}
 	InitializeAuthParams(result);
 }
@@ -255,8 +264,9 @@ static void ApplyProviderDefaults(S3AuthParams &auth_params) {
 	if (auth_params.provider_type != S3ProviderType::GCS) {
 		return;
 	}
-	if (auth_params.endpoint.empty()) {
+	if (EndpointIsUnresolved(auth_params)) {
 		auth_params.endpoint = "storage.googleapis.com";
+		auth_params.endpoint_mode = S3EndpointMode::AUTOMATIC;
 	}
 	if (auth_params.url_style.empty()) {
 		auth_params.url_style = "path";
@@ -264,21 +274,27 @@ static void ApplyProviderDefaults(S3AuthParams &auth_params) {
 }
 
 static void ApplyDerivedDefaults(S3AuthParams &auth_params) {
-	if (!EndpointIsAWS(auth_params.endpoint)) {
+	if (auth_params.provider_type != S3ProviderType::S3 ||
+	    (auth_params.endpoint_mode == S3EndpointMode::EXPLICIT && !EndpointIsAWS(auth_params.endpoint))) {
 		return;
 	}
 	if (auth_params.region.empty()) {
 		if (auth_params.access_key_id.empty()) {
-			auth_params.endpoint = "s3.amazonaws.com";
+			if (auth_params.endpoint_mode == S3EndpointMode::AUTOMATIC) {
+				auth_params.endpoint = "s3.amazonaws.com";
+			}
 			return;
 		}
 		auth_params.region = "us-east-1";
 	}
-	auth_params.endpoint = StringUtil::Format("s3.%s.amazonaws.com", auth_params.region);
+	if (auth_params.endpoint_mode == S3EndpointMode::AUTOMATIC) {
+		auth_params.endpoint = StringUtil::Format("s3.%s.amazonaws.com", auth_params.region);
+	}
 }
 
 void S3Provider::InitializeAuthParams(S3AuthParams &auth_params) {
 	ApplyProviderDefaults(auth_params);
+	ParseURLStyle(auth_params.url_style);
 	if (RequiresExplicitEndpoint(auth_params) && EndpointIsUnresolved(auth_params)) {
 		// Url query parameters still get to supply one; FinalizeAuthParams rejects it if none did
 		return;
@@ -288,6 +304,7 @@ void S3Provider::InitializeAuthParams(S3AuthParams &auth_params) {
 
 void S3Provider::FinalizeAuthParams(S3AuthParams &auth_params) {
 	ApplyProviderDefaults(auth_params);
+	ParseURLStyle(auth_params.url_style);
 	if (RequiresExplicitEndpoint(auth_params) && EndpointIsUnresolved(auth_params)) {
 		if (auth_params.provider_type == S3ProviderType::R2) {
 			throw IOException("R2 requires an endpoint; provide account_id in the secret or s3_endpoint in the URL");
@@ -298,6 +315,17 @@ void S3Provider::FinalizeAuthParams(S3AuthParams &auth_params) {
 	ApplyDerivedDefaults(auth_params);
 }
 
+S3URLStyle S3Provider::ParseURLStyle(const string &url_style) {
+	if (url_style.empty() || url_style == "vhost" || url_style == "virtual") {
+		return S3URLStyle::VIRTUAL_HOSTED;
+	}
+	if (url_style == "path") {
+		return S3URLStyle::PATH;
+	}
+	throw InvalidInputException("Invalid S3 URL style '%s': expected 'vhost', 'virtual', 'path', or an empty string",
+	                            url_style);
+}
+
 S3AuthType S3Provider::GetAuthType(const S3AuthParams &auth_params) {
 	if (auth_params.provider_type == S3ProviderType::GCS && !auth_params.oauth2_bearer_token.empty()) {
 		return S3AuthType::BEARER;
@@ -306,6 +334,48 @@ S3AuthType S3Provider::GetAuthType(const S3AuthParams &auth_params) {
 		return S3AuthType::ANONYMOUS;
 	}
 	return S3AuthType::SIGV4;
+}
+
+static bool EndpointIsR2(const string &endpoint) {
+	static const string R2_ENDPOINT_SUFFIX = ".r2.cloudflarestorage.com";
+	auto host = endpoint.substr(0, endpoint.find('/'));
+	host = host.substr(0, host.find(':'));
+	host = StringUtil::Lower(host);
+	if (!StringUtil::EndsWith(host, R2_ENDPOINT_SUFFIX)) {
+		return false;
+	}
+	auto prefix = host.substr(0, host.size() - R2_ENDPOINT_SUFFIX.size());
+	auto separator = prefix.find('.');
+	if (prefix.empty() || separator == 0) {
+		return false;
+	}
+	if (separator == string::npos) {
+		return true;
+	}
+	auto jurisdiction = prefix.substr(separator + 1);
+	return jurisdiction == "eu" || jurisdiction == "us" || jurisdiction == "fedramp";
+}
+
+static S3MultipartUploadPolicy DefaultMultipartUploadPolicy() {
+	static constexpr idx_t MIB = 1024ULL * 1024ULL;
+	static constexpr idx_t GIB = 1024ULL * MIB;
+	return {S3MultipartPartSizeStrategy::ADAPTIVE, 5ULL * MIB, 5ULL * GIB, 10000, optional_idx()};
+}
+
+static S3MultipartUploadPolicy R2MultipartUploadPolicy() {
+	static constexpr idx_t MIB = 1024ULL * 1024ULL;
+	static constexpr idx_t GIB = 1024ULL * MIB;
+	static constexpr idx_t MAXIMUM_PART_SIZE = 5ULL * GIB - 5ULL * MIB;
+	static constexpr idx_t MAXIMUM_OBJECT_SIZE = 5ULL * 1024ULL * GIB - 5ULL * GIB;
+	return {S3MultipartPartSizeStrategy::FIXED, 8ULL * MIB, MAXIMUM_PART_SIZE, 10000, MAXIMUM_OBJECT_SIZE};
+}
+
+S3MultipartUploadPolicy S3Provider::GetMultipartUploadPolicy(const S3AuthParams &auth_params) {
+	if (auth_params.provider_type == S3ProviderType::R2 ||
+	    (auth_params.provider_type == S3ProviderType::S3 && EndpointIsR2(auth_params.endpoint))) {
+		return R2MultipartUploadPolicy();
+	}
+	return DefaultMultipartUploadPolicy();
 }
 
 string S3Provider::GetBadRequestError(const S3AuthParams &auth_params, const string &correct_region) {

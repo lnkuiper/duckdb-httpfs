@@ -58,7 +58,8 @@ struct S3RequestSnapshot : public HTTPRequestSnapshot {
 public:
 	S3RequestSnapshot(const HTTPFSParams &http_params, const S3AuthParams &auth_params_p, string refresh_path_p,
 	                  weak_ptr<ClientContext> client_context_p = {}, bool credential_refresh_enabled_p = true,
-	                  bool region_redirected_p = false, idx_t credential_generation_p = 0);
+	                  bool region_redirected_p = false, idx_t credential_generation_p = 0,
+	                  optional<S3MultipartUploadPolicy> multipart_upload_policy_p = {});
 
 public:
 	static constexpr HTTPRequestSnapshotType TYPE = HTTPRequestSnapshotType::S3;
@@ -68,6 +69,7 @@ public:
 	bool credential_refresh_enabled;
 	bool region_redirected;
 	idx_t credential_generation;
+	optional<S3MultipartUploadPolicy> multipart_upload_policy;
 };
 
 struct S3RequestContext {

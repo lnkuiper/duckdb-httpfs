@@ -3,6 +3,7 @@
 #include "duckdb/common/array.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/optional.hpp"
+#include "duckdb/common/optional_idx.hpp"
 
 namespace duckdb {
 
@@ -17,6 +18,20 @@ class S3KeyValueReader;
 enum class S3ProviderType : uint8_t { S3, GCS, R2 };
 
 enum class S3AuthType : uint8_t { ANONYMOUS, SIGV4, BEARER };
+
+enum class S3URLStyle : uint8_t { VIRTUAL_HOSTED, PATH };
+
+enum class S3MultipartPartSizeStrategy : uint8_t { ADAPTIVE, FIXED };
+
+struct S3MultipartUploadPolicy {
+	bool operator==(const S3MultipartUploadPolicy &other) const;
+
+	S3MultipartPartSizeStrategy part_size_strategy;
+	idx_t minimum_part_size;
+	idx_t maximum_part_size;
+	idx_t maximum_part_count;
+	optional_idx maximum_object_size;
+};
 
 struct S3ProviderMatch {
 	S3ProviderType type;
@@ -47,7 +62,9 @@ struct S3Provider {
 	static void InitializeAuthParams(S3AuthParams &auth_params);
 	//! Validate that endpoint once every source has been read, then derive the remaining defaults
 	static void FinalizeAuthParams(S3AuthParams &auth_params);
+	static S3URLStyle ParseURLStyle(const string &url_style);
 	static S3AuthType GetAuthType(const S3AuthParams &auth_params);
+	static S3MultipartUploadPolicy GetMultipartUploadPolicy(const S3AuthParams &auth_params);
 	static string GetBadRequestError(const S3AuthParams &auth_params, const string &correct_region = "");
 	static string GetAuthError(const S3AuthParams &auth_params);
 };

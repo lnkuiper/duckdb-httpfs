@@ -85,6 +85,7 @@ static void AddDeleteBatchAuthKeyParts(S3DeleteBatchKeyBuilder &key_builder, con
 	key_builder.AddString(auth_params.secret_access_key);
 	key_builder.AddString(auth_params.session_token);
 	key_builder.AddString(auth_params.endpoint);
+	key_builder.AddIndex(static_cast<idx_t>(auth_params.endpoint_mode));
 	key_builder.AddString(auth_params.kms_key_id);
 	key_builder.AddString(auth_params.url_style);
 	key_builder.AddBool(auth_params.use_ssl);
