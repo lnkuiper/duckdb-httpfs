@@ -547,11 +547,22 @@ public:
 		string completed_object;
 		completed_object.reserve(completed_size);
 		idx_t previous_part_number = 0;
-		for (const auto &manifest_part : manifest) {
+		idx_t fixed_part_size = 0;
+		for (idx_t part_index = 0; part_index < manifest.size(); part_index++) {
+			const auto &manifest_part = manifest[part_index];
 			auto uploaded_part = uploaded_parts.find(manifest_part.part_number);
 			if (manifest_part.part_number <= previous_part_number || uploaded_part == uploaded_parts.end() ||
 			    manifest_part.etag != uploaded_part->second.etag) {
 				return false;
+			}
+			if (config.upload.geometry == MockS3MultipartGeometry::FIXED_EQUAL) {
+				auto part_size = uploaded_part->second.body.size();
+				if (part_index == 0) {
+					fixed_part_size = part_size;
+				} else if ((part_index + 1 < manifest.size() && part_size != fixed_part_size) ||
+				           (part_index + 1 == manifest.size() && part_size > fixed_part_size)) {
+					return false;
+				}
 			}
 			completed_object += uploaded_part->second.body;
 			previous_part_number = manifest_part.part_number;
@@ -733,8 +744,94 @@ public:
 		Record(request, response.status);
 	}
 
+	void HandleObjectPut(const httplib::Request &request, httplib::Response &response) {
+		auto part_number = GetPartNumber(request);
+		unique_ptr<ActivePartUpload> active_upload;
+		if (part_number.IsValid()) {
+			active_upload = make_uniq<ActivePartUpload>(*this, part_number.GetIndex());
+			WaitForPartRelease(part_number.GetIndex());
+		}
+		if (ShouldRejectStaleCredentials(request)) {
+			SendAuthFailure(request, response);
+			return;
+		}
+		if (part_number.IsValid() &&
+		    std::find(config.upload.failed_part_numbers.begin(), config.upload.failed_part_numbers.end(),
+		              part_number.GetIndex()) != config.upload.failed_part_numbers.end()) {
+			SendS3Error400(request, response, false);
+			return;
+		}
+		if (remaining_put_failures.load() > 0) {
+			remaining_put_failures--;
+			SendS3Error400(request, response, config.failures.failure_is_request_timeout);
+			return;
+		}
+		SendPutSuccess(request, response);
+	}
+
+	void HandleObjectPost(const httplib::Request &request, httplib::Response &response) {
+		if (ShouldRejectStaleCredentials(request)) {
+			SendAuthFailure(request, response);
+			return;
+		}
+		if (request.target.find("uploads") != string::npos && remaining_post_failures.load() > 0) {
+			remaining_post_failures--;
+			if (config.failures.transient_post_status == 400) {
+				SendS3Error400(request, response, config.failures.failure_is_request_timeout);
+			} else {
+				response.status = config.failures.transient_post_status;
+				response.set_content(
+				    "<Error><Code>TooManyRequests</Code><Message>Injected initialization throttle</Message></Error>",
+				    "application/xml");
+				Record(request, response.status);
+			}
+			return;
+		}
+		if (request.target.find("uploadId") != string::npos && remaining_completion_faults.load() > 0) {
+			remaining_completion_faults--;
+			SendCompletionFault(request, response);
+			return;
+		}
+		SendMultipartPost(request, response);
+	}
+
+	void HandleObjectDelete(const httplib::Request &request, httplib::Response &response) {
+		if (ShouldRejectStaleCredentials(request)) {
+			SendAuthFailure(request, response);
+			return;
+		}
+		auto upload_id = GetParameter(request, "uploadId");
+		if (!upload_id.empty()) {
+			if (config.upload.abort_behavior == MockS3MultipartAbortBehavior::ERROR) {
+				SendS3Error400(request, response, false);
+				return;
+			}
+			if (upload_id != config.upload.upload_id) {
+				response.status = 404;
+				response.set_content("<Error><Code>NoSuchUpload</Code></Error>", "application/xml");
+				Record(request, response.status);
+				return;
+			}
+			{
+				annotated_lock_guard<annotated_mutex> lock(upload_lock);
+				uploaded_parts.clear();
+			}
+			response.status = 204;
+			Record(request, response.status);
+			return;
+		}
+		if (remaining_delete_failures.load() > 0) {
+			remaining_delete_failures--;
+			SendS3Error400(request, response, config.failures.failure_is_request_timeout);
+			return;
+		}
+		response.status = 204;
+		Record(request, response.status);
+	}
+
 	void RegisterRoutes() {
 		const string path = StringUtil::Format("/%s/%s", config.object.bucket, config.object.key);
+		const string proxy_path = "https?://[^/]+" + path;
 		const string bucket_path = StringUtil::Format("/%s", config.object.bucket);
 		const string bucket_path_with_slash = bucket_path + "/";
 		server.set_post_routing_handler([this](const httplib::Request &, httplib::Response &response) {
@@ -993,54 +1090,17 @@ public:
 		server.Get(bucket_path_with_slash, list_objects);
 
 		server.Put(path, [this](const httplib::Request &request, httplib::Response &response) {
-			auto part_number = GetPartNumber(request);
-			unique_ptr<ActivePartUpload> active_upload;
-			if (part_number.IsValid()) {
-				active_upload = make_uniq<ActivePartUpload>(*this, part_number.GetIndex());
-				WaitForPartRelease(part_number.GetIndex());
-			}
-			if (ShouldRejectStaleCredentials(request)) {
-				SendAuthFailure(request, response);
-				return;
-			}
-			if (part_number.IsValid() &&
-			    std::find(config.upload.failed_part_numbers.begin(), config.upload.failed_part_numbers.end(),
-			              part_number.GetIndex()) != config.upload.failed_part_numbers.end()) {
-				SendS3Error400(request, response, false);
-				return;
-			}
-			if (remaining_put_failures.load() > 0) {
-				remaining_put_failures--;
-				SendS3Error400(request, response, config.failures.failure_is_request_timeout);
-				return;
-			}
-			SendPutSuccess(request, response);
+			HandleObjectPut(request, response);
+		});
+		server.Put(proxy_path, [this](const httplib::Request &request, httplib::Response &response) {
+			HandleObjectPut(request, response);
 		});
 
 		server.Post(path, [this](const httplib::Request &request, httplib::Response &response) {
-			if (ShouldRejectStaleCredentials(request)) {
-				SendAuthFailure(request, response);
-				return;
-			}
-			if (request.target.find("uploads") != string::npos && remaining_post_failures.load() > 0) {
-				remaining_post_failures--;
-				if (config.failures.transient_post_status == 400) {
-					SendS3Error400(request, response, config.failures.failure_is_request_timeout);
-				} else {
-					response.status = config.failures.transient_post_status;
-					response.set_content("<Error><Code>TooManyRequests</Code><Message>Injected initialization "
-					                     "throttle</Message></Error>",
-					                     "application/xml");
-					Record(request, response.status);
-				}
-				return;
-			}
-			if (request.target.find("uploadId") != string::npos && remaining_completion_faults.load() > 0) {
-				remaining_completion_faults--;
-				SendCompletionFault(request, response);
-				return;
-			}
-			SendMultipartPost(request, response);
+			HandleObjectPost(request, response);
+		});
+		server.Post(proxy_path, [this](const httplib::Request &request, httplib::Response &response) {
+			HandleObjectPost(request, response);
 		});
 
 		auto bulk_delete = [this](const httplib::Request &request, httplib::Response &response) {
@@ -1054,37 +1114,10 @@ public:
 		server.Post(bucket_path_with_slash, bulk_delete);
 
 		server.Delete(path, [this](const httplib::Request &request, httplib::Response &response) {
-			if (ShouldRejectStaleCredentials(request)) {
-				SendAuthFailure(request, response);
-				return;
-			}
-			auto upload_id = GetParameter(request, "uploadId");
-			if (!upload_id.empty()) {
-				if (config.upload.abort_behavior == MockS3MultipartAbortBehavior::ERROR) {
-					SendS3Error400(request, response, false);
-					return;
-				}
-				if (upload_id != config.upload.upload_id) {
-					response.status = 404;
-					response.set_content("<Error><Code>NoSuchUpload</Code></Error>", "application/xml");
-					Record(request, response.status);
-					return;
-				}
-				{
-					annotated_lock_guard<annotated_mutex> lock(upload_lock);
-					uploaded_parts.clear();
-				}
-				response.status = 204;
-				Record(request, response.status);
-				return;
-			}
-			if (remaining_delete_failures.load() > 0) {
-				remaining_delete_failures--;
-				SendS3Error400(request, response, config.failures.failure_is_request_timeout);
-				return;
-			}
-			response.status = 204;
-			Record(request, response.status);
+			HandleObjectDelete(request, response);
+		});
+		server.Delete(proxy_path, [this](const httplib::Request &request, httplib::Response &response) {
+			HandleObjectDelete(request, response);
 		});
 	}
 

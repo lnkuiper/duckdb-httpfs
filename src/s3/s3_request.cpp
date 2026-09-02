@@ -724,11 +724,17 @@ bool S3RequestExecutor::TryRefreshSession(HTTPRequestSession &session, const S3R
 		if (latest.region_redirected) {
 			merged_auth_params.SetRegion(latest.auth_params.region);
 		}
+		if (latest.multipart_upload_policy &&
+		    !(S3Provider::GetMultipartUploadPolicy(merged_auth_params) == *latest.multipart_upload_policy)) {
+			throw IOException("Cannot refresh credentials for an active S3 upload because the refreshed endpoint "
+			                  "requires a different multipart upload policy");
+		}
 		auto merged_http_params = latest.CreateRequestParams();
 		refreshed_http_material.Apply(*merged_http_params);
 		auto replacement = make_shared_ptr<S3RequestSnapshot>(
 		    *merged_http_params, merged_auth_params, latest.refresh_path, latest.client_context,
-		    latest.credential_refresh_enabled, latest.region_redirected, latest.credential_generation + 1);
+		    latest.credential_refresh_enabled, latest.region_redirected, latest.credential_generation + 1,
+		    latest.multipart_upload_policy);
 		auto publication = session.TryPublish(current.snapshot, std::move(replacement));
 		if (publication.published) {
 			return true;
@@ -749,9 +755,10 @@ bool S3RequestExecutor::SetSessionRegion(HTTPRequestSession &session, const stri
 		previous_region = auth_params.region;
 		auth_params.SetRegion(correct_region);
 		auto http_params = snapshot.CreateRequestParams();
-		auto replacement = make_shared_ptr<S3RequestSnapshot>(
-		    *http_params, auth_params, snapshot.refresh_path, snapshot.client_context,
-		    snapshot.credential_refresh_enabled, true, snapshot.credential_generation);
+		auto replacement =
+		    make_shared_ptr<S3RequestSnapshot>(*http_params, auth_params, snapshot.refresh_path,
+		                                       snapshot.client_context, snapshot.credential_refresh_enabled, true,
+		                                       snapshot.credential_generation, snapshot.multipart_upload_policy);
 		auto publication = session.TryPublish(current.snapshot, std::move(replacement));
 		if (publication.published) {
 			return true;
@@ -869,10 +876,12 @@ HTTPException S3RequestUtil::GetRequestError(const S3RequestData &request_data, 
 S3RequestSnapshot::S3RequestSnapshot(const HTTPFSParams &http_params, const S3AuthParams &auth_params_p,
                                      string refresh_path_p, weak_ptr<ClientContext> client_context_p,
                                      bool credential_refresh_enabled_p, bool region_redirected_p,
-                                     idx_t credential_generation_p)
+                                     idx_t credential_generation_p,
+                                     optional<S3MultipartUploadPolicy> multipart_upload_policy_p)
     : HTTPRequestSnapshot(http_params, TYPE), auth_params(auth_params_p), refresh_path(std::move(refresh_path_p)),
       client_context(std::move(client_context_p)), credential_refresh_enabled(credential_refresh_enabled_p),
-      region_redirected(region_redirected_p), credential_generation(credential_generation_p) {
+      region_redirected(region_redirected_p), credential_generation(credential_generation_p),
+      multipart_upload_policy(std::move(multipart_upload_policy_p)) {
 }
 
 string S3RequestUtil::GetPayloadHash(EncryptionUtil &encryption_util, const_data_ptr_t buffer, idx_t buffer_len) {

@@ -37,6 +37,8 @@ enum class MockS3MultipartCompletionBehavior : uint8_t {
 
 enum class MockS3MultipartAbortBehavior : uint8_t { SUCCESS, ERROR };
 
+enum class MockS3MultipartGeometry : uint8_t { FLEXIBLE, FIXED_EQUAL };
+
 struct MockS3ObjectConfig {
 	string bucket = "refresh-bucket";
 	string key = "object.bin";
@@ -146,6 +148,7 @@ struct MockS3UploadConfig {
 	//! HTTP status sent before disconnecting a multipart-completion response body
 	int completion_disconnect_status = 200;
 	MockS3MultipartAbortBehavior abort_behavior = MockS3MultipartAbortBehavior::SUCCESS;
+	MockS3MultipartGeometry geometry = MockS3MultipartGeometry::FLEXIBLE;
 };
 
 struct MockS3ServerConfig {

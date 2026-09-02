@@ -323,7 +323,7 @@ S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t da
 
 			while (input_offset < size) {
 				auto remaining = size - input_offset;
-				auto part_size = config.PartSize(part_etags.size());
+				auto part_size = config.TargetPartSize(part_etags.size());
 				auto should_buffer = part_etags.empty() ? remaining <= part_size : remaining < part_size;
 				if (should_buffer) {
 					result.buffered_part = AllocateBufferedPart(part_size);
@@ -332,7 +332,7 @@ S3UploadSession::PreparedWrite S3UploadSession::PrepareWrite(const_data_ptr_t da
 					input_offset += copied;
 					break;
 				}
-				auto direct_size = MinValue<idx_t>(remaining, S3UploadConfig::MAX_MULTIPART_PART_SIZE);
+				auto direct_size = config.DirectPartSize(part_etags.size(), remaining);
 				ReservePart(result, data + input_offset, direct_size);
 				input_offset += direct_size;
 			}

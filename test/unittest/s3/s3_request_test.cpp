@@ -8,6 +8,7 @@
 #include "crypto.hpp"
 #include "s3/s3_provider.hpp"
 #include "s3/s3_request.hpp"
+#include "s3/s3_settings.hpp"
 #include "s3/s3_url.hpp"
 #include "s3/s3fs.hpp"
 
@@ -526,6 +527,43 @@ TEST_CASE("S3 provider policy resolves URL aliases and default scopes", "[httpfs
 		REQUIRE(error.find("s3n://") != string::npos);
 		REQUIRE(error.find("gs://") != string::npos);
 	}
+}
+
+TEST_CASE("S3 provider selects multipart upload policy", "[httpfs][s3][provider][upload]") {
+	static constexpr idx_t MIB = 1024ULL * 1024ULL;
+	static constexpr idx_t GIB = 1024ULL * MIB;
+	const S3MultipartUploadPolicy adaptive_policy {S3MultipartPartSizeStrategy::ADAPTIVE, 5ULL * MIB, 5ULL * GIB, 10000,
+	                                               optional_idx()};
+	const S3MultipartUploadPolicy fixed_policy {S3MultipartPartSizeStrategy::FIXED, 8ULL * MIB, 5115ULL * MIB, 10000,
+	                                            5115ULL * GIB};
+	auto require_policy = [](S3ProviderType provider_type, const string &endpoint,
+	                         const S3MultipartUploadPolicy &expected, bool scheme_is_alias = false) {
+		S3AuthParams auth_params;
+		auth_params.provider_type = provider_type;
+		auth_params.scheme_is_alias = scheme_is_alias;
+		auth_params.endpoint = endpoint;
+		INFO(endpoint);
+		auto policy = S3Provider::GetMultipartUploadPolicy(auth_params);
+		REQUIRE(policy.part_size_strategy == expected.part_size_strategy);
+		REQUIRE(policy.minimum_part_size == expected.minimum_part_size);
+		REQUIRE(policy.maximum_part_size == expected.maximum_part_size);
+		REQUIRE(policy.maximum_part_count == expected.maximum_part_count);
+		REQUIRE(policy.maximum_object_size == expected.maximum_object_size);
+	};
+
+	require_policy(S3ProviderType::R2, "localhost:9000", fixed_policy);
+	require_policy(S3ProviderType::S3, "account.r2.cloudflarestorage.com", fixed_policy);
+	require_policy(S3ProviderType::S3, "account.eu.r2.cloudflarestorage.com", fixed_policy);
+	require_policy(S3ProviderType::S3, "ACCOUNT.FEDRAMP.R2.CLOUDFLARESTORAGE.COM:443/path", fixed_policy);
+	require_policy(S3ProviderType::S3, "account.us.r2.cloudflarestorage.com", fixed_policy, true);
+
+	require_policy(S3ProviderType::S3, "s3.amazonaws.com", adaptive_policy);
+	require_policy(S3ProviderType::GCS, "account.r2.cloudflarestorage.com", adaptive_policy);
+	require_policy(S3ProviderType::S3, "r2.cloudflarestorage.com", adaptive_policy);
+	require_policy(S3ProviderType::S3, "account.r2.cloudflarestorage.com.example.com", adaptive_policy);
+	require_policy(S3ProviderType::S3, "evilr2.cloudflarestorage.com", adaptive_policy);
+	require_policy(S3ProviderType::S3, "objects.example.com", adaptive_policy);
+	require_policy(S3ProviderType::S3, "a.b.r2.cloudflarestorage.com", adaptive_policy);
 }
 
 TEST_CASE("S3 endpoint provenance controls AWS endpoint derivation", "[httpfs][s3][provider][endpoint]") {
