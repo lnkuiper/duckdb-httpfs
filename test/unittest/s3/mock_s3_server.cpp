@@ -749,7 +749,18 @@ public:
 			response.headers.erase(marker.first, marker.second);
 		});
 
-		server.set_pre_routing_handler([this, path](const httplib::Request &request, httplib::Response &response) {
+		server.set_pre_routing_handler([this, path, bucket_path, bucket_path_with_slash](
+		                                   const httplib::Request &request, httplib::Response &response) {
+			if (request.method == "POST" && request.target.find("delete") != string::npos &&
+			    (StringUtil::EndsWith(request.path, bucket_path) ||
+			     StringUtil::EndsWith(request.path, bucket_path_with_slash))) {
+				if (ShouldRejectStaleCredentials(request)) {
+					SendAuthFailure(request, response);
+				} else {
+					SendBulkDeleteSuccess(request, response);
+				}
+				return httplib::Server::HandlerResponse::Handled;
+			}
 			if (request.method != "HEAD" || request.path != path) {
 				return httplib::Server::HandlerResponse::Unhandled;
 			}

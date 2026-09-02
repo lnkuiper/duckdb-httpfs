@@ -8,6 +8,8 @@
 
 namespace duckdb {
 
+enum class S3EndpointMode : uint8_t { AUTOMATIC, EXPLICIT };
+
 class S3KeyValueReader {
 public:
 	S3KeyValueReader(FileOpener &opener_p, optional_ptr<FileOpenerInfo> info, const char **secret_types,
@@ -59,6 +61,7 @@ struct S3AuthParams {
 public:
 	static S3AuthParams ReadFrom(optional_ptr<FileOpener> opener, FileOpenerInfo &info);
 	static S3AuthParams ReadFrom(S3KeyValueReader &secret_reader, const string &file_path);
+	void SetEndpoint(string endpoint_p);
 	void SetRegion(string region_p);
 	bool operator==(const S3AuthParams &other) const;
 
@@ -71,6 +74,7 @@ public:
 	string secret_access_key;
 	string session_token;
 	string endpoint;
+	S3EndpointMode endpoint_mode = S3EndpointMode::AUTOMATIC;
 	string kms_key_id;
 	string url_style;
 	bool use_ssl = true;

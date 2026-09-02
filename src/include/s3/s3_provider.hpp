@@ -18,6 +18,8 @@ enum class S3ProviderType : uint8_t { S3, GCS, R2 };
 
 enum class S3AuthType : uint8_t { ANONYMOUS, SIGV4, BEARER };
 
+enum class S3URLStyle : uint8_t { VIRTUAL_HOSTED, PATH };
+
 struct S3ProviderMatch {
 	S3ProviderType type;
 	string prefix;
@@ -47,6 +49,7 @@ struct S3Provider {
 	static void InitializeAuthParams(S3AuthParams &auth_params);
 	//! Validate that endpoint once every source has been read, then derive the remaining defaults
 	static void FinalizeAuthParams(S3AuthParams &auth_params);
+	static S3URLStyle ParseURLStyle(const string &url_style);
 	static S3AuthType GetAuthType(const S3AuthParams &auth_params);
 	static string GetBadRequestError(const S3AuthParams &auth_params, const string &correct_region = "");
 	static string GetAuthError(const S3AuthParams &auth_params);

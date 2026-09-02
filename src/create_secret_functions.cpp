@@ -54,7 +54,9 @@ private:
 		} else if (name == "region" || name == "session_token" || name == "endpoint" || name == "kms_key_id") {
 			secret->secret_map[Identifier(name)] = value.ToString();
 		} else if (name == "url_style") {
-			secret->secret_map[Identifier(name)] = StringUtil::Lower(value.ToString());
+			auto url_style = StringUtil::Lower(value.ToString());
+			S3Provider::ParseURLStyle(url_style);
+			secret->secret_map[Identifier(name)] = std::move(url_style);
 		} else if (name == "use_ssl" || name == "verify_ssl" || name == "url_compatibility_mode" ||
 		           name == "requester_pays") {
 			SetBooleanOption(name, value);

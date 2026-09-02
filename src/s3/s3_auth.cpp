@@ -52,6 +52,18 @@ S3AuthParams S3AuthParams::ReadFrom(S3KeyValueReader &secret_reader, const strin
 	return result;
 }
 
+void S3AuthParams::SetEndpoint(string new_endpoint) {
+	endpoint = std::move(new_endpoint);
+	auto trimmed_endpoint = endpoint;
+	StringUtil::Trim(trimmed_endpoint);
+	if (trimmed_endpoint.empty() ||
+	    (provider_type == S3ProviderType::S3 && !scheme_is_alias && endpoint == "s3.amazonaws.com")) {
+		endpoint_mode = S3EndpointMode::AUTOMATIC;
+	} else {
+		endpoint_mode = S3EndpointMode::EXPLICIT;
+	}
+}
+
 void S3AuthParams::SetRegion(string new_region) {
 	region = std::move(new_region);
 	S3Provider::FinalizeAuthParams(*this);
@@ -60,8 +72,8 @@ void S3AuthParams::SetRegion(string new_region) {
 bool S3AuthParams::operator==(const S3AuthParams &other) const {
 	return provider_type == other.provider_type && scheme_is_alias == other.scheme_is_alias && region == other.region &&
 	       access_key_id == other.access_key_id && secret_access_key == other.secret_access_key &&
-	       session_token == other.session_token && endpoint == other.endpoint && kms_key_id == other.kms_key_id &&
-	       url_style == other.url_style && use_ssl == other.use_ssl &&
+	       session_token == other.session_token && endpoint == other.endpoint && endpoint_mode == other.endpoint_mode &&
+	       kms_key_id == other.kms_key_id && url_style == other.url_style && use_ssl == other.use_ssl &&
 	       s3_url_compatibility_mode == other.s3_url_compatibility_mode && requester_pays == other.requester_pays &&
 	       oauth2_bearer_token == other.oauth2_bearer_token;
 }

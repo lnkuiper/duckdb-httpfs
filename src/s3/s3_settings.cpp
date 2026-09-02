@@ -60,6 +60,10 @@ struct S3UploadSizing {
 
 } // namespace
 
+static void SetS3URLStyle(ClientContext &, SetScope, Value &parameter) {
+	S3Provider::ParseURLStyle(StringValue::Get(parameter));
+}
+
 S3UploadConfig S3UploadConfig::Create(uint64_t max_file_size, uint64_t max_parts) {
 	if (max_file_size == 0) {
 		throw InvalidInputException("s3_uploader_max_filesize must be greater than zero");
@@ -116,7 +120,7 @@ void S3Settings::Register(DBConfig &config) {
 	config.AddExtensionOption("s3_secret_access_key", "S3 Access Key", LogicalType::VARCHAR);
 	config.AddExtensionOption("s3_session_token", "S3 Session Token", LogicalType::VARCHAR);
 	config.AddExtensionOption("s3_endpoint", "S3 Endpoint", LogicalType::VARCHAR);
-	config.AddExtensionOption("s3_url_style", "S3 URL style", LogicalType::VARCHAR, Value("vhost"));
+	config.AddExtensionOption("s3_url_style", "S3 URL style", LogicalType::VARCHAR, Value("vhost"), SetS3URLStyle);
 	config.AddExtensionOption("s3_use_ssl", "S3 use SSL", LogicalType::BOOLEAN, Value(true));
 	config.AddExtensionOption("s3_kms_key_id", "S3 KMS Key ID", LogicalType::VARCHAR);
 	config.AddExtensionOption("s3_url_compatibility_mode", "Disable Globs and Query Parameters on S3 URLs",

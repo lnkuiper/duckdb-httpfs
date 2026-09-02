@@ -218,16 +218,19 @@ void S3Provider::ReadAuthParams(S3KeyValueReader &secret_reader, const string &f
 	                                        "s3_url_compatibility_mode", result.s3_url_compatibility_mode);
 	secret_reader.TryGetSecretKeyOrSetting("requester_pays", "s3_requester_pays", result.requester_pays);
 
-	auto endpoint_result = secret_reader.TryGetSecretKeyOrSetting("endpoint", "s3_endpoint", result.endpoint);
+	string endpoint;
+	auto endpoint_result = secret_reader.TryGetSecretKeyOrSetting("endpoint", "s3_endpoint", endpoint);
 	auto url_style_result = secret_reader.TryGetSecretKeyOrSetting("url_style", "s3_url_style", result.url_style);
 	if (result.provider_type == S3ProviderType::GCS) {
-		if (result.endpoint.empty() || !endpoint_result || endpoint_result.GetScope() != SettingScope::SECRET) {
-			result.endpoint = "storage.googleapis.com";
+		if (endpoint_result && endpoint_result.GetScope() == SettingScope::SECRET) {
+			result.SetEndpoint(std::move(endpoint));
 		}
 		if (result.url_style.empty() || !url_style_result || url_style_result.GetScope() != SettingScope::SECRET) {
 			result.url_style = "path";
 		}
 		secret_reader.TryGetSecretKey("bearer_token", result.oauth2_bearer_token);
+	} else {
+		result.SetEndpoint(std::move(endpoint));
 	}
 	InitializeAuthParams(result);
 }
@@ -255,8 +258,9 @@ static void ApplyProviderDefaults(S3AuthParams &auth_params) {
 	if (auth_params.provider_type != S3ProviderType::GCS) {
 		return;
 	}
-	if (auth_params.endpoint.empty()) {
+	if (EndpointIsUnresolved(auth_params)) {
 		auth_params.endpoint = "storage.googleapis.com";
+		auth_params.endpoint_mode = S3EndpointMode::AUTOMATIC;
 	}
 	if (auth_params.url_style.empty()) {
 		auth_params.url_style = "path";
@@ -264,21 +268,27 @@ static void ApplyProviderDefaults(S3AuthParams &auth_params) {
 }
 
 static void ApplyDerivedDefaults(S3AuthParams &auth_params) {
-	if (!EndpointIsAWS(auth_params.endpoint)) {
+	if (auth_params.provider_type != S3ProviderType::S3 ||
+	    (auth_params.endpoint_mode == S3EndpointMode::EXPLICIT && !EndpointIsAWS(auth_params.endpoint))) {
 		return;
 	}
 	if (auth_params.region.empty()) {
 		if (auth_params.access_key_id.empty()) {
-			auth_params.endpoint = "s3.amazonaws.com";
+			if (auth_params.endpoint_mode == S3EndpointMode::AUTOMATIC) {
+				auth_params.endpoint = "s3.amazonaws.com";
+			}
 			return;
 		}
 		auth_params.region = "us-east-1";
 	}
-	auth_params.endpoint = StringUtil::Format("s3.%s.amazonaws.com", auth_params.region);
+	if (auth_params.endpoint_mode == S3EndpointMode::AUTOMATIC) {
+		auth_params.endpoint = StringUtil::Format("s3.%s.amazonaws.com", auth_params.region);
+	}
 }
 
 void S3Provider::InitializeAuthParams(S3AuthParams &auth_params) {
 	ApplyProviderDefaults(auth_params);
+	ParseURLStyle(auth_params.url_style);
 	if (RequiresExplicitEndpoint(auth_params) && EndpointIsUnresolved(auth_params)) {
 		// Url query parameters still get to supply one; FinalizeAuthParams rejects it if none did
 		return;
@@ -288,6 +298,7 @@ void S3Provider::InitializeAuthParams(S3AuthParams &auth_params) {
 
 void S3Provider::FinalizeAuthParams(S3AuthParams &auth_params) {
 	ApplyProviderDefaults(auth_params);
+	ParseURLStyle(auth_params.url_style);
 	if (RequiresExplicitEndpoint(auth_params) && EndpointIsUnresolved(auth_params)) {
 		if (auth_params.provider_type == S3ProviderType::R2) {
 			throw IOException("R2 requires an endpoint; provide account_id in the secret or s3_endpoint in the URL");
@@ -296,6 +307,17 @@ void S3Provider::FinalizeAuthParams(S3AuthParams &auth_params) {
 		                  "s3_endpoint, or pass s3_endpoint in the URL");
 	}
 	ApplyDerivedDefaults(auth_params);
+}
+
+S3URLStyle S3Provider::ParseURLStyle(const string &url_style) {
+	if (url_style.empty() || url_style == "vhost" || url_style == "virtual") {
+		return S3URLStyle::VIRTUAL_HOSTED;
+	}
+	if (url_style == "path") {
+		return S3URLStyle::PATH;
+	}
+	throw InvalidInputException("Invalid S3 URL style '%s': expected 'vhost', 'virtual', 'path', or an empty string",
+	                            url_style);
 }
 
 S3AuthType S3Provider::GetAuthType(const S3AuthParams &auth_params) {
