@@ -108,7 +108,7 @@ SET s3_url_style='handwritten';
 Invalid Input Error: Invalid S3 URL style 'handwritten': expected 'vhost', 'virtual', 'path', or an empty string
 
 statement ok
-SET s3_url_style='vhost';
+SET s3_url_style='path';
 
 # 404
 statement error
