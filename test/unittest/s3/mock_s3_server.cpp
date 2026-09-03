@@ -765,12 +765,20 @@ public:
 
 	void SendMalformedListObjectsSuccess(const httplib::Request &request, httplib::Response &response) const {
 		response.status = 200;
-		response.set_content("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-		                     "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
-		                     "<Name>refresh-bucket</Name>"
-		                     "<Contents><Key>partial-fake-object.bin</Key><ETag>&quot;fake&quot;</ETag><Size>1</Size>"
-		                     "</Contents>",
-		                     "application/xml");
+		if (config.failures.malformed_list_behavior == MockS3MalformedListBehavior::FOREIGN_NAMESPACE_KEY) {
+			response.set_content("<native:ListBucketResult xmlns:native=\"urn:native\" xmlns:foreign=\"urn:foreign\">"
+			                     "<native:Contents><foreign:Key>partial-fake-object.bin</foreign:Key>"
+			                     "</native:Contents></native:ListBucketResult>",
+			                     "application/xml");
+		} else {
+			response.set_content(
+			    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+			    "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+			    "<Name>refresh-bucket</Name>"
+			    "<Contents><Key>partial-fake-object.bin</Key><ETag>&quot;fake&quot;</ETag><Size>1</Size>"
+			    "</Contents>",
+			    "application/xml");
+		}
 		Record(request, response.status);
 	}
 

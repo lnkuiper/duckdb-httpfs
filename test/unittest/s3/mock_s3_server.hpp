@@ -19,6 +19,8 @@ enum class MockS3RefreshTarget : uint8_t {
 
 enum class MockS3RangeBehavior : uint8_t { NORMAL, IGNORE_RANGE, TRUNCATE_TRANSFER, SHORT_SUCCESS };
 
+enum class MockS3MalformedListBehavior : uint8_t { TRUNCATED_XML, FOREIGN_NAMESPACE_KEY };
+
 enum class MockS3MultipartInitializationBehavior : uint8_t {
 	SUCCESS,
 	NAMESPACED_ESCAPED_SUCCESS,
@@ -85,6 +87,7 @@ struct MockS3FailureConfig {
 	idx_t transient_400_lists = 0;
 	//! Answer this many leading ListObjectsV2 requests with malformed HTTP 200 bodies
 	idx_t malformed_success_lists = 0;
+	MockS3MalformedListBehavior malformed_list_behavior = MockS3MalformedListBehavior::TRUNCATED_XML;
 	//! Number of object PUTs to fail with a 400 before succeeding
 	idx_t transient_put_failures = 0;
 	//! Number of object GETs to fail with a 400 before succeeding
