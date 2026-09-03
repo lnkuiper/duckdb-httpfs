@@ -100,6 +100,16 @@ static idx_t CountHeader(const httplib::Request &request, const string &header) 
 	return result;
 }
 
+static idx_t CountDeleteKeys(const string &body) {
+	idx_t result = 0;
+	idx_t position = 0;
+	while ((position = body.find("<Object>", position)) != string::npos) {
+		result++;
+		position += strlen("<Object>");
+	}
+	return result;
+}
+
 static string GetParameter(const httplib::Request &request, const string &parameter) {
 	if (!request.has_param(parameter)) {
 		return string();
@@ -411,6 +421,7 @@ public:
 		observation.part_number = GetPartNumber(request);
 		observation.body_size = request.body.size();
 		observation.body_digest = MockS3BodyDigest::Compute(request.body);
+		observation.delete_key_count = CountDeleteKeys(request.body);
 		observation.user_agent_count = CountHeader(request, "User-Agent");
 		observation.session_header_count = CountHeader(request, "X-HTTPFS-Session");
 		observation.status = status;
@@ -698,7 +709,17 @@ public:
 		active_part_uploads--;
 	}
 
-	void SendBulkDeleteSuccess(const httplib::Request &request, httplib::Response &response) const {
+	void SendBulkDeleteResponse(const httplib::Request &request, httplib::Response &response) const {
+		auto key_count = CountDeleteKeys(request.body);
+		if (config.bulk_delete.maximum_key_count.IsValid() &&
+		    key_count > config.bulk_delete.maximum_key_count.GetIndex()) {
+			response.status = 500;
+			response.set_content("<Error><Code>InternalError</Code><Message>DeleteObjects batch is too large</Message>"
+			                     "</Error>",
+			                     "application/xml");
+			Record(request, response.status);
+			return;
+		}
 		response.status = 200;
 		response.set_content("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
 		                     "<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"></DeleteResult>",
@@ -834,6 +855,8 @@ public:
 		const string proxy_path = "https?://[^/]+" + path;
 		const string bucket_path = StringUtil::Format("/%s", config.object.bucket);
 		const string bucket_path_with_slash = bucket_path + "/";
+		const string proxy_bucket_path = "https?://[^/]+" + bucket_path;
+		const string proxy_bucket_path_with_slash = proxy_bucket_path + "/";
 		server.set_post_routing_handler([this](const httplib::Request &, httplib::Response &response) {
 			if (!response.has_header("X-Mock-Successful-Short-Response")) {
 				return;
@@ -846,18 +869,7 @@ public:
 			response.headers.erase(marker.first, marker.second);
 		});
 
-		server.set_pre_routing_handler([this, path, bucket_path, bucket_path_with_slash](
-		                                   const httplib::Request &request, httplib::Response &response) {
-			if (request.method == "POST" && request.target.find("delete") != string::npos &&
-			    (StringUtil::EndsWith(request.path, bucket_path) ||
-			     StringUtil::EndsWith(request.path, bucket_path_with_slash))) {
-				if (ShouldRejectStaleCredentials(request)) {
-					SendAuthFailure(request, response);
-				} else {
-					SendBulkDeleteSuccess(request, response);
-				}
-				return httplib::Server::HandlerResponse::Handled;
-			}
+		server.set_pre_routing_handler([this, path](const httplib::Request &request, httplib::Response &response) {
 			if (request.method != "HEAD" || request.path != path) {
 				return httplib::Server::HandlerResponse::Unhandled;
 			}
@@ -1108,10 +1120,12 @@ public:
 				SendAuthFailure(request, response);
 				return;
 			}
-			SendBulkDeleteSuccess(request, response);
+			SendBulkDeleteResponse(request, response);
 		};
 		server.Post(bucket_path, bulk_delete);
 		server.Post(bucket_path_with_slash, bulk_delete);
+		server.Post(proxy_bucket_path, bulk_delete);
+		server.Post(proxy_bucket_path_with_slash, bulk_delete);
 
 		server.Delete(path, [this](const httplib::Request &request, httplib::Response &response) {
 			HandleObjectDelete(request, response);
@@ -1303,14 +1317,15 @@ string MockS3DescribeObservations(const vector<MockS3RequestObservation> &observ
 		}
 		result += StringUtil::Format(
 		    "%s %s status=%d key=%s region=%s range=%s if_match=%s version_id=%s target=%s upload_id=%s "
-		    "part_number=%s body_size=%llu body_digest=%s published=%s sse=%s kms_key_id=%s user_agent=%s "
+		    "part_number=%s body_size=%llu delete_key_count=%llu body_digest=%s published=%s sse=%s "
+		    "kms_key_id=%s user_agent=%s "
 		    "session_header=%s",
 		    observation.method, observation.path, observation.status, observation.key_id, observation.region,
 		    observation.range, observation.if_match, observation.version_id, observation.target, observation.upload_id,
 		    observation.part_number.IsValid() ? std::to_string(observation.part_number.GetIndex()) : string(),
-		    observation.body_size, observation.body_digest, observation.multipart_upload_published ? "true" : "false",
-		    observation.server_side_encryption, observation.kms_key_id, observation.user_agent,
-		    observation.session_header);
+		    observation.body_size, observation.delete_key_count, observation.body_digest,
+		    observation.multipart_upload_published ? "true" : "false", observation.server_side_encryption,
+		    observation.kms_key_id, observation.user_agent, observation.session_header);
 	}
 	return result;
 }

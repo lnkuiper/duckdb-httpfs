@@ -110,6 +110,11 @@ struct MockS3ListConfig {
 	bool paginate = false;
 };
 
+struct MockS3BulkDeleteConfig {
+	//! Reject DeleteObjects requests containing more than this many keys
+	optional_idx maximum_key_count;
+};
+
 struct MockS3RangeConfig {
 	MockS3RangeBehavior behavior = MockS3RangeBehavior::NORMAL;
 	//! Number of leading range GETs affected by transient range behaviors
@@ -157,6 +162,7 @@ struct MockS3ServerConfig {
 	MockS3MetadataConfig metadata;
 	MockS3FailureConfig failures;
 	MockS3ListConfig list;
+	MockS3BulkDeleteConfig bulk_delete;
 	MockS3RangeConfig range;
 	MockS3FullGetConfig full_get;
 	MockS3UploadConfig upload;
@@ -181,6 +187,7 @@ struct MockS3RequestObservation {
 	string body_digest;
 	optional_idx part_number;
 	idx_t body_size = 0;
+	idx_t delete_key_count = 0;
 	idx_t user_agent_count = 0;
 	idx_t session_header_count = 0;
 	int status = 0;
