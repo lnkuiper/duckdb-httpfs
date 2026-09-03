@@ -110,6 +110,14 @@ static idx_t CountDeleteKeys(const string &body) {
 	return result;
 }
 
+static void SetETagHeader(httplib::Response &response, MockS3ETagBehavior behavior, const string &value) {
+	if (behavior == MockS3ETagBehavior::VALUE) {
+		response.set_header("ETag", value);
+	} else if (behavior == MockS3ETagBehavior::EMPTY) {
+		response.set_header("ETag", "");
+	}
+}
+
 static string GetParameter(const httplib::Request &request, const string &parameter) {
 	if (!request.has_param(parameter)) {
 		return string();
@@ -491,17 +499,18 @@ public:
 		Record(request, response.status);
 	}
 
-	void SendPutSuccess(const httplib::Request &request, httplib::Response &response) {
-		response.status = 200;
+	void SendPutResponse(const httplib::Request &request, httplib::Response &response) {
 		auto part_number = GetPartNumber(request);
+		auto &response_config = part_number.IsValid() ? config.upload.multipart_part_put : config.upload.object_put;
+		response.status = response_config.status;
 		if (part_number.IsValid()) {
 			auto part = part_number.GetIndex();
 			auto etag = StringUtil::Format("\"mock-part-%llu\"", part);
-			response.set_header("ETag", etag);
+			SetETagHeader(response, response_config.etag, etag);
 			annotated_lock_guard<annotated_mutex> lock(upload_lock);
 			uploaded_parts[part] = {std::move(etag), request.body};
 		} else {
-			response.set_header("ETag", "\"httpfs-refresh-test-upload-etag\"");
+			SetETagHeader(response, response_config.etag, "\"httpfs-refresh-test-upload-etag\"");
 			annotated_lock_guard<annotated_mutex> lock(upload_lock);
 			uploaded_object = request.body;
 		}
@@ -787,7 +796,7 @@ public:
 			SendS3Error400(request, response, config.failures.failure_is_request_timeout);
 			return;
 		}
-		SendPutSuccess(request, response);
+		SendPutResponse(request, response);
 	}
 
 	void HandleObjectPost(const httplib::Request &request, httplib::Response &response) {

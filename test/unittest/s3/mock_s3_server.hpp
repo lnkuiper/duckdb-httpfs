@@ -39,6 +39,8 @@ enum class MockS3MultipartAbortBehavior : uint8_t { SUCCESS, ERROR };
 
 enum class MockS3MultipartGeometry : uint8_t { FLEXIBLE, FIXED_EQUAL };
 
+enum class MockS3ETagBehavior : uint8_t { VALUE, EMPTY, OMIT };
+
 struct MockS3ObjectConfig {
 	string bucket = "refresh-bucket";
 	string key = "object.bin";
@@ -137,7 +139,16 @@ struct MockS3FullGetConfig {
 	bool block_until_released = false;
 };
 
+struct MockS3PutResponseConfig {
+	int status = 200;
+	MockS3ETagBehavior etag = MockS3ETagBehavior::VALUE;
+};
+
 struct MockS3UploadConfig {
+	//! PUT response behavior
+	MockS3PutResponseConfig object_put;
+	MockS3PutResponseConfig multipart_part_put;
+
 	//! Existing object preserved when an upload is abandoned
 	string initial_published_object;
 	//! Multipart upload ID returned by the mock server
