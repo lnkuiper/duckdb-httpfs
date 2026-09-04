@@ -335,7 +335,7 @@ private:
 			}
 
 			if (client.state) {
-				client.state->total_bytes_received += bytes_received;
+				client.state->RecordBytesReceived(bytes_received);
 			}
 		}
 
@@ -379,7 +379,7 @@ public:
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
 		ResetRequestInfo();
 		if (state) {
-			state->get_count++;
+			state->RecordRequest(RequestType::GET_REQUEST);
 		}
 
 		auto curl_headers = TransformHeadersCurl(info.headers, info.params);
@@ -405,8 +405,8 @@ public:
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
 		ResetRequestInfo();
 		if (state) {
-			state->put_count++;
-			state->total_bytes_sent += info.buffer_in_len;
+			state->RecordRequest(RequestType::PUT_REQUEST);
+			state->RecordBytesSent(info.buffer_in_len);
 		}
 
 		auto curl_headers = TransformHeadersCurl(info.headers, info.params);
@@ -440,14 +440,14 @@ public:
 
 		curl_easy_getinfo(*curl, CURLINFO_RESPONSE_CODE, &request_info->response_code);
 
-		return TransformResponseCurl(res);
+		return TransformBufferedResponseCurl(res);
 	}
 
 	unique_ptr<HTTPResponse> Head(HeadRequestInfo &info) override {
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
 		ResetRequestInfo();
 		if (state) {
-			state->head_count++;
+			state->RecordRequest(RequestType::HEAD_REQUEST);
 		}
 
 		auto curl_headers = TransformHeadersCurl(info.headers, info.params);
@@ -476,14 +476,14 @@ public:
 		}
 
 		curl_easy_getinfo(*curl, CURLINFO_RESPONSE_CODE, &request_info->response_code);
-		return TransformResponseCurl(res);
+		return TransformBufferedResponseCurl(res);
 	}
 
 	unique_ptr<HTTPResponse> Delete(DeleteRequestInfo &info) override {
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
 		ResetRequestInfo();
 		if (state) {
-			state->delete_count++;
+			state->RecordRequest(RequestType::DELETE_REQUEST);
 		}
 		auto curl_headers = TransformHeadersCurl(info.headers, info.params);
 		// transform parameters
@@ -510,11 +510,14 @@ public:
 
 		// Get HTTP response status code
 		curl_easy_getinfo(*curl, CURLINFO_RESPONSE_CODE, &request_info->response_code);
-		return TransformResponseCurl(res);
+		return TransformBufferedResponseCurl(res);
 	}
 
 	unique_ptr<HTTPResponse> Options(OptionsRequestInfo &info) override {
 		ResetRequestInfo();
+		if (state) {
+			state->RecordRequest(RequestType::OPTIONS_REQUEST);
+		}
 		auto curl_headers = TransformHeadersCurl(info.headers, info.params);
 		request_info->url = info.url;
 
@@ -535,15 +538,15 @@ public:
 		}
 
 		curl_easy_getinfo(*curl, CURLINFO_RESPONSE_CODE, &request_info->response_code);
-		return TransformResponseCurl(res);
+		return TransformBufferedResponseCurl(res);
 	}
 
 	unique_ptr<HTTPResponse> Post(PostRequestInfo &info) override {
 		AddUserAgentIfAvailable(info.params.Cast<HTTPFSParams>(), info.headers);
 		ResetRequestInfo();
 		if (state) {
-			state->post_count++;
-			state->total_bytes_sent += info.buffer_in_len;
+			state->RecordRequest(RequestType::POST_REQUEST);
+			state->RecordBytesSent(info.buffer_in_len);
 		}
 
 		auto curl_headers = TransformHeadersCurl(info.headers, info.params);
@@ -584,13 +587,7 @@ public:
 		curl_easy_getinfo(*curl, CURLINFO_RESPONSE_CODE, &request_info->response_code);
 		info.buffer_out = request_info->body;
 
-		const idx_t bytes_received = request_info->body.size();
-		if (state) {
-			state->total_bytes_received += bytes_received;
-		}
-
-		// Construct HTTPResponse
-		return TransformResponseCurl(res);
+		return TransformBufferedResponseCurl(res);
 	}
 
 	void Cleanup() override {
@@ -656,6 +653,14 @@ private:
 		return response;
 	}
 
+	unique_ptr<HTTPResponse> TransformBufferedResponseCurl(CURLcode res) {
+		auto response = TransformResponseCurl(res);
+		if (state) {
+			state->RecordBytesReceived(request_info->body.size());
+		}
+		return response;
+	}
+
 	static void InitCurlGlobal() {
 		auto &state = GetCURLGlobalState();
 		annotated_lock_guard<annotated_mutex> lock(state.lock);
@@ -687,8 +692,8 @@ private:
 };
 
 unique_ptr<HTTPClient> HTTPFSCurlUtil::InitializeClient(HTTPParams &http_params, const string &proto_host_port) {
-	if (connection_caching_enabled) {
-		auto client = connection_cache.Find(proto_host_port);
+	if (ConnectionCachingEnabled()) {
+		auto client = FindCachedClient(proto_host_port);
 		if (client) {
 			if (http_params.logger &&
 			    http_params.logger->ShouldLog(HTTPFSInfoLogType::NAME, HTTPFSInfoLogType::LEVEL)) {

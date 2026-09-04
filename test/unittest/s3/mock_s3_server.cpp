@@ -534,6 +534,9 @@ public:
 			SetETagHeader(response, response_config.etag, "\"httpfs-refresh-test-upload-etag\"");
 			annotated_lock_guard<annotated_mutex> lock(upload_lock);
 			uploaded_object = request.body;
+			if (!config.http_response.object_put_body.empty()) {
+				response.set_content(config.http_response.object_put_body, "application/octet-stream");
+			}
 		}
 		Record(request, response.status);
 	}
@@ -884,7 +887,12 @@ public:
 			SendS3Error400(request, response, config.failures.failure_is_request_timeout);
 			return;
 		}
-		response.status = 204;
+		if (config.http_response.object_delete_body.empty()) {
+			response.status = 204;
+		} else {
+			response.status = 200;
+			response.set_content(config.http_response.object_delete_body, "application/octet-stream");
+		}
 		Record(request, response.status);
 	}
 
@@ -1182,6 +1190,14 @@ public:
 		server.Delete(proxy_path, [this](const httplib::Request &request, httplib::Response &response) {
 			HandleObjectDelete(request, response);
 		});
+
+		if (!config.http_response.options_body.empty()) {
+			server.Options(path, [this](const httplib::Request &request, httplib::Response &response) {
+				response.status = 200;
+				response.set_content(config.http_response.options_body, "application/octet-stream");
+				Record(request, response.status);
+			});
+		}
 	}
 
 public:

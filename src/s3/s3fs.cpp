@@ -168,11 +168,15 @@ void S3FileHandle::AbortUpload() {
 }
 
 EncryptionUtil &S3FileSystem::GetEncryptionUtil() {
-	auto &config = DBConfig::GetConfig(buffer_manager.GetDatabase());
+	auto &config = DBConfig::GetConfig(GetBufferManager().GetDatabase());
 	if (!config.encryption_util) {
 		throw InternalException("HTTPFS encryption util has not been initialized");
 	}
 	return *config.encryption_util;
+}
+
+BufferManager &S3FileSystem::GetBufferManager() {
+	return buffer_manager;
 }
 
 unique_ptr<HTTPFileHandle> S3FileSystem::CreateHandle(const OpenFileInfo &file, FileOpenFlags flags,
@@ -240,7 +244,7 @@ bool S3FileSystem::CanHandleFile(const string &fpath) {
 	if (fpath.find("://") == string::npos) {
 		return false;
 	}
-	auto &config = DBConfig::GetConfig(buffer_manager.GetDatabase());
+	auto &config = DBConfig::GetConfig(GetBufferManager().GetDatabase());
 	return S3UrlScheme::TryMatch(fpath, S3UrlScheme::GetAliasPrefixes(config)).has_value();
 }
 

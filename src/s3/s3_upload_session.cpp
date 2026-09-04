@@ -262,7 +262,7 @@ shared_ptr<const ErrorData> S3UploadSession::AbortMultipartUpload(const string &
 }
 
 unique_ptr<S3UploadSession::BufferedPart> S3UploadSession::AllocateBufferedPart(idx_t capacity) {
-	auto buffer = s3fs.get().buffer_manager.Allocate(MemoryTag::EXTENSION, capacity);
+	auto buffer = s3fs.get().GetBufferManager().Allocate(MemoryTag::EXTENSION, capacity);
 	return make_uniq<BufferedPart>(std::move(buffer), capacity);
 }
 

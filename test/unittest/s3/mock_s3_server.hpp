@@ -154,6 +154,12 @@ struct MockS3PutResponseConfig {
 	MockS3ETagBehavior etag = MockS3ETagBehavior::VALUE;
 };
 
+struct MockS3HTTPResponseConfig {
+	string object_put_body;
+	string object_delete_body;
+	string options_body;
+};
+
 struct MockS3UploadConfig {
 	//! PUT response behavior
 	MockS3PutResponseConfig object_put;
@@ -189,6 +195,7 @@ struct MockS3ServerConfig {
 	MockS3RangeConfig range;
 	MockS3FullGetConfig full_get;
 	MockS3UploadConfig upload;
+	MockS3HTTPResponseConfig http_response;
 };
 
 struct MockS3RequestObservation {

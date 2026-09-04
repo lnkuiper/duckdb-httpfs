@@ -127,7 +127,9 @@ public:
 	HTTPException GetHTTPError(FileHandle &, const HTTPResponse &response, RequestType request_type,
 	                           const string &url) override;
 
+	//! Database services used by S3 requests and uploads.
 	EncryptionUtil &GetEncryptionUtil();
+	BufferManager &GetBufferManager();
 
 protected:
 	//! FileSystem extension points for S3 open/list/glob.
@@ -144,7 +146,7 @@ private:
 	S3RequestResult RunS3BulkDeleteRequest(HTTPRequestSession &session, const string &secret_lookup_url,
 	                                       const string &body, idx_t key_count, string &result);
 
-public:
+	//! Database-owned buffer manager.
 	BufferManager &buffer_manager;
 };
 } // namespace duckdb
