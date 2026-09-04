@@ -129,13 +129,13 @@ private:
 			return false;
 		}
 		auto db = FileOpener::TryGetDatabase(opener);
-		auto aliases = db ? S3Provider::GetSchemeAliasPrefixes(db->config) : vector<string>();
-		return S3Provider::TryMatchUrl(info->file_path, aliases).has_value();
+		auto aliases = db ? S3UrlScheme::GetAliasPrefixes(db->config) : vector<string>();
+		return S3UrlScheme::TryMatch(info->file_path, aliases).has_value();
 	}
 
 	unique_ptr<KeyValueSecretReader> CreateSettingsReader() {
 		if (IsS3Path()) {
-			auto provider_secret_types = S3Provider::SecretTypes();
+			auto provider_secret_types = S3SecretConfig::SecretTypes();
 			vector<const char *> s3_secret_types(provider_secret_types.begin(), provider_secret_types.end());
 			s3_secret_types.push_back("http");
 			idx_t secret_type_count = s3_secret_types.size();

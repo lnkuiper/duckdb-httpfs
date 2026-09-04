@@ -179,16 +179,14 @@ EncryptionUtil &S3FileSystem::GetEncryptionUtil() {
 unique_ptr<HTTPFileHandle> S3FileSystem::CreateHandle(const OpenFileInfo &file, FileOpenFlags flags,
                                                       optional_ptr<FileOpener> opener) {
 	FileOpenerInfo info = {file.path};
-	S3AuthParams auth_params = S3AuthParams::ReadFrom(opener, info);
-
-	S3Url::Resolve(file.path, auth_params);
+	auto auth_params = S3AuthResolver::Resolve(opener, info);
 
 	auto &http_util = HTTPFSUtil::GetHTTPUtil(opener);
 	auto params = http_util.InitializeParameters(opener, info);
 	S3UploadConfig upload_config;
 	optional<S3MultipartUploadPolicy> multipart_upload_policy;
 	if (flags.OpenForWriting()) {
-		multipart_upload_policy = S3Provider::GetMultipartUploadPolicy(auth_params);
+		multipart_upload_policy = auth_params.GetProvider().GetMultipartUploadPolicy();
 		upload_config = S3UploadConfig::ReadFrom(opener, *multipart_upload_policy);
 	}
 
@@ -209,8 +207,8 @@ HTTPMetadataCacheEntry S3FileHandle::GetCacheEntry() const {
 	auto captured = request_session->Capture();
 	auto &snapshot = captured.snapshot->Cast<S3RequestSnapshot>();
 	if (snapshot.region_redirected) {
-		D_ASSERT(!snapshot.auth_params.region.empty());
-		result.properties["s3_region"] = snapshot.auth_params.region;
+		D_ASSERT(!snapshot.auth_params.GetCredentials().region.empty());
+		result.properties["s3_region"] = snapshot.auth_params.GetCredentials().region;
 	}
 	return result;
 }
@@ -238,14 +236,14 @@ void S3FileHandle::Initialize(optional_ptr<FileOpener> opener) {
 bool S3FileSystem::CanHandleFile(const string &fpath) {
 	// This runs for every path the VFS probes, so keep local paths and built-in schemes off the
 	// setting lookup, which takes the database-wide settings lock
-	if (S3Provider::TryMatchUrl(fpath)) {
+	if (S3UrlScheme::TryMatch(fpath)) {
 		return true;
 	}
 	if (fpath.find("://") == string::npos) {
 		return false;
 	}
 	auto &config = DBConfig::GetConfig(buffer_manager.GetDatabase());
-	return S3Provider::TryMatchUrl(fpath, S3Provider::GetSchemeAliasPrefixes(config)).has_value();
+	return S3UrlScheme::TryMatch(fpath, S3UrlScheme::GetAliasPrefixes(config)).has_value();
 }
 
 bool S3FileSystem::OnDiskFile(FileHandle &) {
