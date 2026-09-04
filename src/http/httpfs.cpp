@@ -822,12 +822,12 @@ void HTTPFileHandle::InitializeRequestState(optional_ptr<FileOpener> opener) {
 		buffer_allocator = database ? BufferAllocator::Get(*database) : Allocator::DefaultAllocator();
 	}
 	auto captured = request_session->Capture();
-	auto request_params = captured.snapshot->CreateRequestParams();
-	request_params->state = HTTPState::TryGetState(opener);
-	if (!request_params->state) {
-		request_params->state = make_shared_ptr<HTTPState>();
+	auto snapshot_params = captured.snapshot->Params();
+	snapshot_params.state = HTTPState::TryGetState(opener);
+	if (!snapshot_params.state) {
+		snapshot_params.state = make_shared_ptr<HTTPState>();
 	}
-	request_session->TryPublish(captured.snapshot, CreateRequestSnapshot(*request_params));
+	request_session->TryPublish(captured.snapshot, CreateRequestSnapshot(snapshot_params));
 	auto request_snapshot = request_session->Capture().snapshot;
 	file_state = request_snapshot->Params().state->GetFileState(path);
 

@@ -619,16 +619,12 @@ private:
 	}
 
 	static CURLRequestHeaders TransformHeadersCurl(const HTTPHeaders &header_map, const HTTPParams &params) {
-		auto &httpfs_params = params.Cast<HTTPFSParams>();
-
 		CURLRequestHeaders curl_headers;
 		for (auto &entry : header_map) {
 			curl_headers.Add(entry.first, entry.second);
 		}
-		if (!httpfs_params.pre_merged_headers) {
-			for (auto &entry : params.extra_headers) {
-				curl_headers.Add(entry.first, entry.second);
-			}
+		for (auto &entry : params.extra_headers) {
+			curl_headers.Add(entry.first, entry.second);
 		}
 		return curl_headers;
 	}

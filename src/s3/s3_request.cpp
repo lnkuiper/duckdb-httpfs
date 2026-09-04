@@ -42,7 +42,6 @@ void S3RefreshableHTTPParams::Apply(HTTPFSParams &target) const {
 	target.override_verify_ssl = override_verify_ssl;
 	target.verify_ssl = verify_ssl;
 	target.bearer_token = bearer_token;
-	target.pre_merged_headers = false;
 }
 
 bool S3RefreshableHTTPParams::operator==(const S3RefreshableHTTPParams &other) const {
@@ -316,11 +315,11 @@ private:
 	HTTPHeaders &headers;
 };
 
-static HTTPHeaders CreateConfiguredS3Headers(const unordered_map<string, string> &extra_headers,
-                                             const string &user_agent, S3ProviderType provider_type) {
+static HTTPHeaders CreateConfiguredS3Headers(const HTTPConfiguredHeaders &configured_headers,
+                                             S3ProviderType provider_type) {
 	vector<pair<string, string>> sorted_headers;
-	sorted_headers.reserve(extra_headers.size());
-	for (const auto &header : extra_headers) {
+	sorted_headers.reserve(configured_headers.extra_headers.size());
+	for (const auto &header : configured_headers.extra_headers) {
 		sorted_headers.emplace_back(header.first, header.second);
 	}
 	std::sort(sorted_headers.begin(), sorted_headers.end(), [](const auto &left, const auto &right) {
@@ -348,8 +347,8 @@ static HTTPHeaders CreateConfiguredS3Headers(const unordered_map<string, string>
 	for (auto &header : sorted_headers) {
 		result[header.first] = header.second;
 	}
-	if (!user_agent.empty()) {
-		result.Insert("User-Agent", user_agent);
+	if (!configured_headers.user_agent.empty()) {
+		result.Insert("User-Agent", configured_headers.user_agent);
 	}
 	return result;
 }
@@ -358,7 +357,7 @@ HTTPHeaders S3RequestUtil::CreateHeaders(EncryptionUtil &encryption_util, const 
                                          S3RequestOperation operation, const S3RequestQuery &query,
                                          const S3AuthParams &auth_params, string date_now, string datetime_now,
                                          string payload_hash, string content_type, string content_md5,
-                                         const unordered_map<string, string> &extra_headers, const string &user_agent) {
+                                         const HTTPConfiguredHeaders &configured_headers) {
 	const auto &host = parsed_url.GetHost();
 	auto &operation_info = GetOperationInfo(operation);
 	const auto &encoded_path = operation_info.target == S3RequestTarget::BUCKET ? parsed_url.GetEncodedBucketPath()
@@ -366,7 +365,7 @@ HTTPHeaders S3RequestUtil::CreateHeaders(EncryptionUtil &encryption_util, const 
 	auto &provider = auth_params.GetProvider();
 	auto &credentials = auth_params.GetCredentials();
 	auto &request_options = auth_params.GetRequestOptions();
-	auto headers = CreateConfiguredS3Headers(extra_headers, user_agent, provider.GetType());
+	auto headers = CreateConfiguredS3Headers(configured_headers, provider.GetType());
 	if (provider.GetType() == S3ProviderType::GCS && !request_options.user_project.empty()) {
 		headers["x-goog-user-project"] = request_options.user_project;
 	}
@@ -516,17 +515,17 @@ S3RequestData S3RequestExecutor::CreateRequestData(EncryptionUtil &encryption_ut
 	auto &operation_info = S3RequestUtil::GetOperationInfo(spec.operation);
 	S3RequestData result {spec.operation, snapshot.auth_params};
 	result.captured = captured;
-	result.http_params = snapshot.CreateRequestParams();
+	auto session_request = snapshot.CreateRequest();
+	result.http_params = std::move(session_request.params);
 	auto parsed_s3_url = S3Url::Parse(spec.url, result.auth_params);
 	result.display_url = S3Url::GetDisplayUrl(spec.url, result.auth_params);
 	auto query = spec.create_query ? spec.create_query(parsed_s3_url) : S3RequestQuery();
 	result.http_url = operation_info.target == S3RequestTarget::BUCKET
 	                      ? parsed_s3_url.GetBucketHTTPUrl(query.WireQuery())
 	                      : parsed_s3_url.GetHTTPUrl(query.WireQuery());
-	auto &http_params = result.http_params->Cast<HTTPFSParams>();
 	result.headers = S3RequestUtil::CreateHeaders(encryption_util, parsed_s3_url, spec.operation, query,
 	                                              result.auth_params, "", "", spec.payload_hash, spec.content_type,
-	                                              spec.content_md5, http_params.extra_headers, http_params.user_agent);
+	                                              spec.content_md5, session_request.configured_headers);
 	return result;
 }
 
@@ -709,14 +708,14 @@ bool S3RequestExecutor::TryRefreshSession(HTTPRequestSession &session, const S3R
 	}
 	ClientContextFileOpener opener(*context);
 	auto refreshed_auth_params = current_snapshot.auth_params;
-	auto refreshed_http_params = current_snapshot.CreateRequestParams();
+	auto refreshed_http_params = current_snapshot.Params();
 	if (!TryRefreshS3AuthMaterial(context, opener, current_snapshot.refresh_path, refreshed_auth_params,
-	                              *refreshed_http_params, current_snapshot.credential_refresh_enabled,
+	                              refreshed_http_params, current_snapshot.credential_refresh_enabled,
 	                              current_snapshot.region_redirected)) {
 		return session.Capture().snapshot->Cast<S3RequestSnapshot>().credential_generation !=
 		       failed_snapshot.credential_generation;
 	}
-	auto refreshed_http_material = S3RefreshableHTTPParams(*refreshed_http_params);
+	auto refreshed_http_material = S3RefreshableHTTPParams(refreshed_http_params);
 	for (;;) {
 		current = session.Capture();
 		auto &latest = current.snapshot->Cast<S3RequestSnapshot>();
@@ -733,10 +732,10 @@ bool S3RequestExecutor::TryRefreshSession(HTTPRequestSession &session, const S3R
 			throw IOException("Cannot refresh credentials for an active S3 upload because the refreshed endpoint "
 			                  "requires a different multipart upload policy");
 		}
-		auto merged_http_params = latest.CreateRequestParams();
-		refreshed_http_material.Apply(*merged_http_params);
+		auto merged_http_params = latest.Params();
+		refreshed_http_material.Apply(merged_http_params);
 		auto replacement = make_shared_ptr<S3RequestSnapshot>(
-		    *merged_http_params, merged_auth_params, latest.refresh_path, latest.client_context,
+		    merged_http_params, merged_auth_params, latest.refresh_path, latest.client_context,
 		    latest.credential_refresh_enabled, latest.region_redirected, latest.credential_generation + 1,
 		    latest.multipart_upload_policy);
 		auto publication = session.TryPublish(current.snapshot, std::move(replacement));
@@ -758,9 +757,8 @@ bool S3RequestExecutor::SetSessionRegion(HTTPRequestSession &session, const stri
 		auto auth_params = snapshot.auth_params;
 		previous_region = auth_params.GetCredentials().region;
 		auth_params = auth_params.WithRegion(correct_region);
-		auto http_params = snapshot.CreateRequestParams();
 		auto replacement =
-		    make_shared_ptr<S3RequestSnapshot>(*http_params, auth_params, snapshot.refresh_path,
+		    make_shared_ptr<S3RequestSnapshot>(snapshot.Params(), auth_params, snapshot.refresh_path,
 		                                       snapshot.client_context, snapshot.credential_refresh_enabled, true,
 		                                       snapshot.credential_generation, snapshot.multipart_upload_policy);
 		auto publication = session.TryPublish(current.snapshot, std::move(replacement));

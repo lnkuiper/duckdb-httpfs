@@ -35,10 +35,9 @@ S3FileHandle::S3FileHandle(FileSystem &fs, const OpenFileInfo &file, FileOpenFla
                            optional<S3MultipartUploadPolicy> multipart_upload_policy)
     : HTTPFileHandle(fs, file, flags, std::move(http_params_p)) {
 	auto captured = request_session->Capture();
-	auto request_params = captured.snapshot->CreateRequestParams();
 	request_session->TryPublish(captured.snapshot,
-	                            make_shared_ptr<S3RequestSnapshot>(*request_params, auth_params_p, file.path,
-	                                                               weak_ptr<ClientContext>(), true, false, 0,
+	                            make_shared_ptr<S3RequestSnapshot>(captured.snapshot->Params(), auth_params_p,
+	                                                               file.path, weak_ptr<ClientContext>(), true, false, 0,
 	                                                               std::move(multipart_upload_policy)));
 	auto_fallback_to_full_file_download = false;
 	if (flags.OpenForReading() && flags.OpenForWriting()) {
@@ -219,14 +218,13 @@ void S3FileHandle::Initialize(optional_ptr<FileOpener> opener) {
 	{
 		auto captured = request_session->Capture();
 		auto &snapshot = captured.snapshot->Cast<S3RequestSnapshot>();
-		auto request_params = snapshot.CreateRequestParams();
 		weak_ptr<ClientContext> weak_context;
 		if (context && refresh_enabled) {
 			weak_context = context->shared_from_this();
 		}
 		request_session->TryPublish(
 		    captured.snapshot,
-		    make_shared_ptr<S3RequestSnapshot>(*request_params, snapshot.auth_params, snapshot.refresh_path,
+		    make_shared_ptr<S3RequestSnapshot>(snapshot.Params(), snapshot.auth_params, snapshot.refresh_path,
 		                                       std::move(weak_context), refresh_enabled, snapshot.region_redirected,
 		                                       snapshot.credential_generation, snapshot.multipart_upload_policy));
 	}

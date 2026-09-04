@@ -72,7 +72,6 @@ public:
 	bool s3_version_id_pinning {false};
 	shared_ptr<HTTPState> state;
 	string user_agent = {""};
-	bool pre_merged_headers = false;
 	idx_t force_download_threshold = 0;
 	HTTPClientReuseMode client_reuse_mode = HTTPClientReuseMode::SESSION_LOCAL;
 	optional_ptr<HTTPFSUtil> httpfs_util;

@@ -442,9 +442,8 @@ static void PublishTestS3Region(const shared_ptr<HTTPRequestSession> &session, c
 			return;
 		}
 		auto auth_params = snapshot.auth_params.WithRegion(region);
-		auto http_params = snapshot.CreateRequestParams();
 		auto replacement = make_shared_ptr<S3RequestSnapshot>(
-		    *http_params, auth_params, snapshot.refresh_path, snapshot.client_context,
+		    snapshot.Params(), auth_params, snapshot.refresh_path, snapshot.client_context,
 		    snapshot.credential_refresh_enabled, true, snapshot.credential_generation);
 		if (session->TryPublish(captured.snapshot, std::move(replacement)).published) {
 			return;

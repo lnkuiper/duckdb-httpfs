@@ -1666,7 +1666,8 @@ TEST_CASE("S3 configured headers are validated before request authentication", "
 	auto create_headers = [&](const S3AuthParams &auth, const unordered_map<string, string> &extra_headers,
 	                          const string &user_agent = "httpfs-agent") {
 		return S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT,
-		                                    S3RequestQuery(), auth, "", "", "", "", "", extra_headers, user_agent);
+		                                    S3RequestQuery(), auth, "", "", "", "", "",
+		                                    HTTPConfiguredHeaders {user_agent, extra_headers});
 	};
 	auto capture_error = [&](const S3AuthParams &auth, const unordered_map<string, string> &extra_headers) {
 		try {
@@ -1995,11 +1996,13 @@ TEST_CASE("GCS billing projects are applied across authentication modes", "[http
 		unordered_map<string, string> extra_headers {{"X-GoOg-UsEr-PrOjEcT", "configured-project"}};
 		auto gcs = ResolveTestAuth(TestAuthConfig(S3ProviderType::GCS));
 		REQUIRE_THROWS(S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT,
-		                                            S3RequestQuery(), gcs, "", "", "", "", "", extra_headers));
+		                                            S3RequestQuery(), gcs, "", "", "", "", "",
+		                                            HTTPConfiguredHeaders {"", extra_headers}));
 
 		auto s3 = ResolveTestAuth(TestAuthConfig());
-		auto headers = S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT,
-		                                            S3RequestQuery(), s3, "", "", "", "", "", extra_headers);
+		auto headers =
+		    S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT, S3RequestQuery(),
+		                                 s3, "", "", "", "", "", HTTPConfiguredHeaders {"", extra_headers});
 		REQUIRE(headers.GetHeaderValue("X-GoOg-UsEr-PrOjEcT") == "configured-project");
 	}
 
@@ -2032,10 +2035,10 @@ TEST_CASE("S3 request signing canonicalizes configured extension headers", "[htt
 
 	auto raw = S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT,
 	                                        S3RequestQuery(), auth_params, "20260831", "20260831T120000Z", "", "", "",
-	                                        raw_headers, "httpfs-agent");
+	                                        HTTPConfiguredHeaders {"httpfs-agent", raw_headers});
 	auto normalized = S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT,
 	                                               S3RequestQuery(), auth_params, "20260831", "20260831T120000Z", "",
-	                                               "", "", normalized_headers, "httpfs-agent");
+	                                               "", "", HTTPConfiguredHeaders {"httpfs-agent", normalized_headers});
 
 	const auto &authorization = raw.GetHeaderValue("Authorization");
 	REQUIRE(authorization == normalized.GetHeaderValue("Authorization"));
@@ -2068,12 +2071,12 @@ TEST_CASE("S3 request signing preserves empty configured extension headers", "[h
 	unordered_map<string, string> raw_headers {{"X-AmZ-Meta-Empty", ""}, {"x-GoOg-Meta-Whitespace", "\t  \t"}};
 	unordered_map<string, string> normalized_headers {{"x-amz-meta-empty", ""}, {"X-GOOG-META-WHITESPACE", ""}};
 
-	auto raw =
-	    S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT, S3RequestQuery(),
-	                                 auth_params, "20260831", "20260831T120000Z", "", "", "", raw_headers);
-	auto normalized =
-	    S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT, S3RequestQuery(),
-	                                 auth_params, "20260831", "20260831T120000Z", "", "", "", normalized_headers);
+	auto raw = S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT,
+	                                        S3RequestQuery(), auth_params, "20260831", "20260831T120000Z", "", "", "",
+	                                        HTTPConfiguredHeaders {"", raw_headers});
+	auto normalized = S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT,
+	                                               S3RequestQuery(), auth_params, "20260831", "20260831T120000Z", "",
+	                                               "", "", HTTPConfiguredHeaders {"", normalized_headers});
 
 	const auto &authorization = raw.GetHeaderValue("Authorization");
 	REQUIRE(authorization == normalized.GetHeaderValue("Authorization"));
@@ -2095,13 +2098,13 @@ TEST_CASE("S3 request signing changes configured headers after a region redirect
 	auto parsed_url = ParseTestS3Url("s3://bucket/key", "bucket.example.com", "path");
 	unordered_map<string, string> extra_headers {{"X-AmZ-Meta-Region", "region-value"}};
 
-	auto us_east_1 =
-	    S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT, S3RequestQuery(),
-	                                 auth_params, "20260831", "20260831T120000Z", "", "", "", extra_headers);
+	auto us_east_1 = S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT,
+	                                              S3RequestQuery(), auth_params, "20260831", "20260831T120000Z", "", "",
+	                                              "", HTTPConfiguredHeaders {"", extra_headers});
 	auth_params = auth_params.WithRegion("eu-west-1");
-	auto eu_west_1 =
-	    S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT, S3RequestQuery(),
-	                                 auth_params, "20260831", "20260831T120000Z", "", "", "", extra_headers);
+	auto eu_west_1 = S3RequestUtil::CreateHeaders(encryption_util, parsed_url, S3RequestOperation::GET_OBJECT,
+	                                              S3RequestQuery(), auth_params, "20260831", "20260831T120000Z", "", "",
+	                                              "", HTTPConfiguredHeaders {"", extra_headers});
 
 	const auto &us_authorization = us_east_1.GetHeaderValue("Authorization");
 	const auto &eu_authorization = eu_west_1.GetHeaderValue("Authorization");

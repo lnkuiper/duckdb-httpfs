@@ -227,16 +227,12 @@ public:
 
 private:
 	static duckdb_httplib_openssl::Headers TransformHeaders(const HTTPHeaders &header_map, const HTTPParams &params) {
-		auto &httpfs_params = params.Cast<HTTPFSParams>();
-
 		duckdb_httplib_openssl::Headers headers;
 		for (auto &entry : header_map) {
 			headers.emplace(entry.first, HTTPFSHeaderValue::IsEmpty(entry.second) ? string() : entry.second);
 		}
-		if (!httpfs_params.pre_merged_headers) {
-			for (auto &entry : params.extra_headers) {
-				headers.emplace(entry.first, HTTPFSHeaderValue::IsEmpty(entry.second) ? string() : entry.second);
-			}
+		for (auto &entry : params.extra_headers) {
+			headers.emplace(entry.first, HTTPFSHeaderValue::IsEmpty(entry.second) ? string() : entry.second);
 		}
 		return headers;
 	}
