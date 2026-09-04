@@ -107,6 +107,64 @@ static void RunCurlTerminalTransportErrorIsNotCached() {
 	HTTPTestHelper::RequireQueryOk(con, "COMMIT");
 }
 
+static void RunCurlExactEmptyResponseHeaderScenario() {
+	MockS3ServerConfig config;
+	config.metadata.exact_empty_response_headers = true;
+	config.metadata.response_headers.emplace_back("X-Empty", "");
+	MockS3Server server(std::move(config));
+
+	HTTPFSCurlUtil http_util;
+	HTTPFSParams params(http_util);
+	auto client = http_util.InitializeClient(params, "http://" + server.Endpoint());
+	HeadRequestInfo request(server.HTTPPath(), HTTPHeaders(), params);
+	auto response = http_util.Request(request, client);
+	REQUIRE(response);
+	REQUIRE(response->Success());
+	REQUIRE(response->headers.HasHeader("X-Empty"));
+	REQUIRE(response->headers.GetHeaderValue("X-Empty").empty());
+}
+
+static void RunCurlRedirectedResponseHeaderScenario() {
+	MockS3ServerConfig config;
+	config.metadata.redirect_head = true;
+	config.metadata.redirect_response_headers.emplace_back("X-Redirect-Only", "redirect");
+	config.metadata.response_headers.emplace_back("X-Repeated", "first");
+	config.metadata.response_headers.emplace_back("X-Repeated", "second");
+	MockS3Server server(std::move(config));
+
+	HTTPFSCurlUtil http_util;
+	HTTPFSParams params(http_util);
+	params.follow_location = true;
+	auto client = http_util.InitializeClient(params, "http://" + server.Endpoint());
+	HeadRequestInfo request(server.HTTPPath(), HTTPHeaders(), params);
+	auto response = http_util.Request(request, client);
+	REQUIRE(response);
+	REQUIRE(response->Success());
+	REQUIRE(response->headers.GetHeaderValues("X-Repeated") == vector<string> {"first", "second"});
+	REQUIRE_FALSE(response->headers.HasHeader("X-Redirect-Only"));
+}
+
+static void RunCurlRequestHeaderScenario() {
+	MockS3Server server {MockS3ServerConfig()};
+	HTTPFSCurlUtil http_util;
+	HTTPFSParams params(http_util);
+	auto client = http_util.InitializeClient(params, "http://" + server.Endpoint());
+	HTTPHeaders headers;
+	headers["X-Empty"] = "";
+	headers["X-Whitespace"] = " \t ";
+	headers["X-Value"] = "value";
+	HeadRequestInfo request(server.HTTPPath(), headers, params);
+	auto response = http_util.Request(request, client);
+	REQUIRE(response);
+	REQUIRE(response->Success());
+
+	auto observations = server.Observations();
+	REQUIRE(observations.size() == 1);
+	REQUIRE(MockS3HeaderValues(observations[0], "X-Empty") == vector<string> {""});
+	REQUIRE(MockS3HeaderValues(observations[0], "X-Whitespace") == vector<string> {""});
+	REQUIRE(MockS3HeaderValues(observations[0], "X-Value") == vector<string> {"value"});
+}
+
 } // namespace
 
 TEST_CASE("HTTP request sessions allow follow-up requests after completed errors", "[httpfs][request-session]") {
@@ -124,6 +182,18 @@ TEST_CASE("Curl retries bypass the shared connection cache", "[httpfs][request-s
 
 TEST_CASE("Curl terminal transport errors are not cached", "[httpfs][request-session]") {
 	RunCurlTerminalTransportErrorIsNotCached();
+}
+
+TEST_CASE("Curl response headers accept exact empty fields", "[httpfs][curl][headers]") {
+	RunCurlExactEmptyResponseHeaderScenario();
+}
+
+TEST_CASE("Curl response headers preserve repeated fields from the final redirect", "[httpfs][curl][headers]") {
+	RunCurlRedirectedResponseHeaderScenario();
+}
+
+TEST_CASE("Curl request headers preserve empty field values", "[httpfs][curl][headers]") {
+	RunCurlRequestHeaderScenario();
 }
 
 } // namespace duckdb

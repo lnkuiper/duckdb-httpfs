@@ -149,8 +149,4 @@ private:
 
 #endif
 
-struct HeaderCollector {
-	vector<HTTPHeaders> header_collection;
-};
-
 } // namespace duckdb

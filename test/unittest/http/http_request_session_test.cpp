@@ -1,7 +1,6 @@
 #include "catch.hpp"
 
 #include "http/http_request_session.hpp"
-#include "http/httpfs_curl_client.hpp"
 #include "s3/s3fs.hpp"
 
 #include <functional>
@@ -460,17 +459,6 @@ TEST_CASE("HTTP client leases preserve backend reuse policy", "[httpfs][request-
 		REQUIRE(lifecycle.closed == 0);
 		REQUIRE(lifecycle.destroyed == 0);
 	}
-}
-
-TEST_CASE("CURL request headers preserve empty field values", "[httpfs][curl][headers]") {
-	CURLRequestHeaders headers;
-	headers.Add("X-Empty", "");
-	headers.Add("X-Whitespace", " \t ");
-	headers.Add("X-Value", "value");
-
-	REQUIRE(string(headers.headers->data) == "X-Empty;");
-	REQUIRE(string(headers.headers->next->data) == "X-Whitespace;");
-	REQUIRE(string(headers.headers->next->next->data) == "X-Value: value");
 }
 
 } // namespace duckdb
